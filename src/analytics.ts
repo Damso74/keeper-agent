@@ -4,11 +4,11 @@ import { requireApiKey } from "./config";
  * Client de l'API Analytics KeeperHub.
  *
  * Deux endpoints REST, distincts du serveur MCP :
- *   GET /api/analytics/runs?source=direct   (paginé)
+ *   GET /api/analytics/runs?source=direct   (paginé par curseur)
  *   GET /api/analytics/runs/:id/steps
  *
- * Ils sont interrogés avec la même clé d'organisation en Bearer. La clé n'est
- * jamais journalisée ni recopiée dans la sortie.
+ * Interrogés avec la clé d'organisation en Bearer. La clé n'est jamais
+ * journalisée ni recopiée dans la sortie.
  *
  * Une indisponibilité est une **information de couverture fournisseur** : elle
  * est consignée telle quelle et ne peut ni valider ni invalider une exécution.
@@ -21,6 +21,8 @@ export type AnalyticsProbe = {
   httpStatus: number | null;
   available: boolean;
   note: string;
+  /** Identifiant de requête renvoyé par le fournisseur, utile pour un ticket. */
+  requestId: string | null;
 };
 
 export type AnalyticsAudit = {
@@ -38,7 +40,21 @@ export type AnalyticsAudit = {
   };
 };
 
-type FetchOutcome = { status: number | null; body: unknown; error: string | null };
+type FetchOutcome = {
+  status: number | null;
+  body: unknown;
+  error: string | null;
+  requestId: string | null;
+};
+
+/** Extrait un identifiant de requête, d'en-tête ou de corps. Jamais la clé. */
+function readRequestId(headers: Headers | undefined, body: unknown): string | null {
+  const fromHeader = headers?.get("x-request-id") ?? headers?.get("request-id") ?? null;
+  if (fromHeader) return fromHeader;
+  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const fromBody = record?.request_id ?? record?.requestId;
+  return typeof fromBody === "string" ? fromBody : null;
+}
 
 async function get(path: string): Promise<FetchOutcome> {
   const apiKey = requireApiKey();
@@ -52,27 +68,36 @@ async function get(path: string): Promise<FetchOutcome> {
     } catch {
       body = null;
     }
-    return { status: response.status, body, error: null };
+    return {
+      status: response.status,
+      body,
+      error: null,
+      requestId: readRequestId(response.headers, body),
+    };
   } catch (error) {
-    return { status: null, body: null, error: String(error).slice(0, 160) };
+    return { status: null, body: null, error: String(error).slice(0, 160), requestId: null };
   }
 }
 
-/** Message de couverture, sans jamais refléter la clé. */
+/**
+ * Note de couverture. Reste factuelle : on rapporte ce qui a été observé, sans
+ * conclure sur la cause du rejet — elle n'est pas établie.
+ */
 function describe(outcome: FetchOutcome): string {
-  if (outcome.error) return `Injoignable : ${outcome.error}`;
-  if (outcome.status === 401) {
-    return "401 — l'API Analytics n'accepte pas les clés d'organisation (session navigateur attendue).";
+  if (outcome.error) return `Unreachable: ${outcome.error}`;
+  if (outcome.status === 401 || outcome.status === 403) {
+    return (
+      `HTTP ${outcome.status}. The organization API key used by this agent was rejected by ` +
+      "the documented Analytics endpoints. The underlying cause remains unresolved."
+    );
   }
-  if (outcome.status === 403) {
-    return "403 — organisation non résolue depuis une clé d'API.";
-  }
-  if (outcome.status && outcome.status >= 400) return `HTTP ${outcome.status}.`;
   return `HTTP ${outcome.status}.`;
 }
 
 function rows(body: unknown): Array<Record<string, unknown>> {
-  if (Array.isArray(body)) return body.filter((r): r is Record<string, unknown> => !!r && typeof r === "object");
+  if (Array.isArray(body)) {
+    return body.filter((r): r is Record<string, unknown> => !!r && typeof r === "object");
+  }
   const container = body as Record<string, unknown> | null;
   for (const key of ["runs", "data", "items", "results"]) {
     const value = container?.[key];
@@ -83,6 +108,22 @@ function rows(body: unknown): Array<Record<string, unknown>> {
   return [];
 }
 
+/** Curseur de page suivante, à la racine ou sous un objet de pagination. */
+function nextCursor(body: unknown): string | null {
+  const container = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const direct = container?.nextCursor;
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  for (const key of ["pagination", "page", "meta"]) {
+    const nested = container?.[key];
+    const value =
+      nested && typeof nested === "object"
+        ? (nested as Record<string, unknown>).nextCursor
+        : undefined;
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return null;
+}
+
 function matchesExecution(row: Record<string, unknown>, executionId: string): boolean {
   for (const key of ["executionId", "id", "execution_id", "runId"]) {
     if (row[key] === executionId) return true;
@@ -91,8 +132,11 @@ function matchesExecution(row: Record<string, unknown>, executionId: string): bo
 }
 
 /**
- * Cherche un run par identifiant en parcourant les pages `source=direct`.
- * S'arrête dès qu'il est trouvé, ou après `maxPages`.
+ * Cherche un run par identifiant en suivant les curseurs de `source=direct`.
+ *
+ * Premier appel sans `cursor`, appels suivants avec le `nextCursor` reçu. On
+ * s'arrête dès que le run est trouvé, qu'aucun `nextCursor` n'est renvoyé, ou
+ * que `maxPages` est atteint.
  */
 export async function fetchAnalyticsAudit(
   executionId: string,
@@ -103,17 +147,28 @@ export async function fetchAnalyticsAudit(
 
   let found: Record<string, unknown> | null = null;
   let pagesScanned = 0;
-  let lastOutcome: FetchOutcome = { status: null, body: null, error: "aucun appel effectué" };
+  let cursor: string | null = null;
+  let lastOutcome: FetchOutcome = {
+    status: null,
+    body: null,
+    error: "no call made",
+    requestId: null,
+  };
   let listPath = "";
 
   for (let page = 1; page <= maxPages; page += 1) {
-    listPath = `/api/analytics/runs?source=direct&limit=${pageSize}&page=${page}`;
+    listPath =
+      `/api/analytics/runs?source=direct&limit=${pageSize}` +
+      (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
     lastOutcome = await get(listPath);
     pagesScanned = page;
     if (lastOutcome.status !== 200) break;
-    const batch = rows(lastOutcome.body);
-    found = batch.find((row) => matchesExecution(row, executionId)) ?? null;
-    if (found || batch.length < pageSize) break;
+
+    found = rows(lastOutcome.body).find((row) => matchesExecution(row, executionId)) ?? null;
+    if (found) break;
+
+    cursor = nextCursor(lastOutcome.body);
+    if (!cursor) break;
   }
 
   const stepsPath = `/api/analytics/runs/${encodeURIComponent(executionId)}/steps`;
@@ -129,11 +184,12 @@ export async function fetchAnalyticsAudit(
         endpoint: listPath,
         httpStatus: lastOutcome.status,
         available: lastOutcome.status === 200,
+        requestId: lastOutcome.requestId,
         note:
           lastOutcome.status === 200
             ? found
-              ? "Run retrouvé dans le journal Analytics."
-              : `Run absent des ${pagesScanned} page(s) parcourue(s).`
+              ? "Run found in the Analytics log."
+              : `Run absent from the ${pagesScanned} page(s) scanned.`
             : describe(lastOutcome),
       },
     },
@@ -145,11 +201,12 @@ export async function fetchAnalyticsAudit(
         endpoint: stepsPath,
         httpStatus: stepsOutcome.status,
         available: stepsOutcome.status === 200,
+        requestId: stepsOutcome.requestId,
         note:
           stepsOutcome.status === 200
             ? stepEntries && stepEntries.length > 0
-              ? `${stepEntries.length} étape(s) journalisée(s).`
-              : "Endpoint disponible mais aucune étape journalisée."
+              ? `${stepEntries.length} step(s) logged.`
+              : "Endpoint available but no steps logged."
             : describe(stepsOutcome),
       },
     },

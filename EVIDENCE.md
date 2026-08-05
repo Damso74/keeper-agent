@@ -106,24 +106,43 @@ Both endpoints were queried with the organisation API key, on 2026-08-05:
 
 | Endpoint | HTTP | Outcome |
 | --- | --- | --- |
-| `GET /api/analytics/runs?source=direct&limit=50&page=1` | **401** | `{"error":"Authentication required"}` |
+| `GET /api/analytics/runs?source=direct&limit=50` (cursor pagination) | **401** | `{"error":"Authentication required"}` |
 | `GET /api/analytics/runs/no623hdfsrun2vzv3b25r/steps` | **403** | `{"error":"Organization not found"}` |
 
 Also tried and rejected: raw `Authorization`, `x-api-key`, and `Bearer` plus an
 `x-organization-id` header — all 401. `/api/v1/analytics/runs` returns a clean 404, so the
-path above is the right one; the API simply does not accept organisation API keys and
-expects a browser session.
+path above is the documented one.
+
+**The organization API key used by this agent was rejected by the documented Analytics
+endpoints. The underlying cause remains unresolved.** Any `request_id` or `x-request-id`
+returned by the provider is preserved in the coverage record, so the rejection can be traced
+without exposing the key.
 
 **This is provider coverage, not a verdict.** The audit records the endpoint, the status code
 and the note, marks the surface unavailable, and moves on. An absent Analytics record can
 never validate an execution and never turns into a false success — the authoritative checks
 run entirely on RPC evidence.
 
-## Historical balance proof — reproducible
+## Historical balance — partial evidence, not a proof
 
-At the time of the 2026-08-04 simulation the delegate EOA held **0 USDC**. Public Sepolia
-RPCs no longer serve state at that height (`historical state is not available`), so the
-balance is reconstructed from event logs, which stay indexed on non-archive nodes.
+**Scope, stated up front.** The scan below covers the **300 000 blocks preceding the
+incident** — `11118272 → 11418272` — not the token's full history. It therefore shows no
+balance-affecting activity in that window; it does **not** prove the delegate EOA never held
+USDC before it. Treat this as supporting evidence, not proof.
+
+Two reasons the full scan was not run:
+
+- Public Sepolia RPCs no longer serve state at that height
+  (`historical state is not available`), so the token's deployment block cannot be located
+  by binary search over `eth_getCode`.
+- Scanning from block 0 means ~233 range requests against a public endpoint, which did not
+  complete in usable time.
+
+`scripts/prove-historical-balance.mjs` performs the complete scan and is kept in the
+repository: pointed at an archive node via `SEPOLIA_RPC_URL`, it locates the deployment
+block, sums every incoming and outgoing `Transfer`, and reports the chunk count and totals.
+
+What the partial scan does show, reproducibly:
 
 | | |
 | --- | --- |
@@ -133,14 +152,18 @@ balance is reconstructed from event logs, which stay indexed on non-archive node
 | topic0 | `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef` |
 | Incoming filter | topic2 = the EOA, left-padded to 32 bytes |
 | Outgoing filter | topic1 = the EOA, left-padded to 32 bytes |
-| fromBlock → toBlock | `11118272` → `11418272`, in 49 000-block chunks (the node caps ranges at 50 000) |
+| fromBlock → toBlock | `11118272` → `11418272` (300 000 blocks), in 49 000-block chunks — the node caps ranges at 50 000 |
+| Chunks | 7 windows, 2 requests each (incoming + outgoing) |
 
-Result: **1 incoming Transfer, 0 outgoing.** The single incoming transfer is 1 USDC at block
-11418272 — the incident transaction itself.
+Result over that window: **1 incoming Transfer totalling 1 USDC, 0 outgoing totalling 0
+USDC.** The single incoming transfer is the incident transaction itself, at block 11418272.
 
-Therefore: **0 USDC immediately before that transaction**, and **1 USDC once the transaction
-and its block completed**. This is what made the direct-path simulation revert with
-`ERC20: transfer amount exceeds balance` while the Safe path succeeded.
+So within the scanned window the balance was **0 USDC immediately before that transaction**
+and **1 USDC once it and its block completed** — consistent with the direct-path simulation
+reverting on `ERC20: transfer amount exceeds balance` while the Safe path succeeded.
+
+Residual limit: any transfer older than block 11118272 would not appear here. Run the script
+against an archive node to close that gap.
 
 ## Reproducible simulation false negative
 
