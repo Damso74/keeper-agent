@@ -37,14 +37,29 @@ observe (RPC, direct)  →  decide (pure rule)  →  execute (KeeperHub MCP)  �
 
 ## Why the simulation is consulted but not obeyed
 
-KeeperHub's simulator models a **direct ERC20 transfer from the delegate EOA**, which holds
-no USDC. The real execution path is `EOA → Roles Modifier → Safe → USDC`. On this flow the
-simulator therefore produces a **false negative**: it predicted a revert for a transfer that
-succeeded on-chain (tx
-[`0x0801289e…`](https://sepolia.etherscan.io/tx/0x0801289edfdcfd919b64b1f7e267d935674d09fa09de7a9670b8aa169bcb605e)).
+KeeperHub's simulator models a **direct ERC20 transfer from the delegate EOA**. The real
+execution path is `EOA → Roles Modifier → Safe → USDC`. The two disagree whenever the amount
+exceeds the EOA's own token balance but stays within the Safe's policy allowance — the
+simulator predicts a revert for a transfer the chain accepts.
 
+Reproduce it on demand:
+
+```bash
+npm run simulate -- 2      # simulator: would revert · on-chain policy: accepts
+npm run simulate -- 0.1    # both agree
+```
+
+It is not theoretical: the simulator predicted a revert for a transfer that then succeeded
+on-chain — tx
+[`0x0801289e…`](https://sepolia.etherscan.io/tx/0x0801289edfdcfd919b64b1f7e267d935674d09fa09de7a9670b8aa169bcb605e).
+
+The threshold moves as the delegate EOA's balance changes; the modelling gap does not.
 The agent runs the simulation, records the verdict, and **treats it as a non-blocking
 signal**. Failure modes are handled where they can be proven — against the chain.
+
+See [EVIDENCE.md](./EVIDENCE.md) for the full teardown, including a second finding: the
+revert comes back as **HTTP 400** with the diagnostic JSON wrapped inside an error string,
+so a client that reads only the status code loses it entirely.
 
 ## Setup
 
