@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "check": "tsx src/check.ts",
-    "simulate": "tsx src/simulate.ts"
+    "simulate": "tsx src/simulate.ts",
+    "audit": "tsx src/auditCmd.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",

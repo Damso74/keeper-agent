@@ -35,6 +35,43 @@ observe (RPC, direct)  →  decide (pure rule)  →  execute (KeeperHub MCP)  �
    provider says `completed` and the chain has not confirmed, the outcome is
    `EXECUTED_PENDING_VERIFICATION` and a note says so.
 
+## Audit trail
+
+A read-only command pulls KeeperHub's audit record for any execution and reconciles it
+field by field against independent RPC evidence:
+
+```bash
+npm run audit -- no623hdfsrun2vzv3b25r
+```
+
+It emits JSON with three parts: `keeperHubAudit` (the provider's record, normalised),
+`chainEvidence` (read straight from RPC), and `reconciliation` (per-check results and a
+verdict). No broadcast, no state change, and the API key never reaches the output.
+
+**Verdict rules** — a divergence outranks an absence, and neither is ever turned into a
+success:
+
+| Verdict | When |
+| --- | --- |
+| `MISMATCH` | an authoritative check diverges from the chain |
+| `EVIDENCE_MISSING` | an authoritative check has no evidence to compare |
+| `MATCH_WITH_PROVIDER_WARNINGS` | the chain agrees; only provider-side signals are off |
+| `MATCH` | everything agrees |
+
+Only the chain is authoritative. Provider signals — `sponsored` consistency, simulation
+outcome, policy disclosure, idempotent replay — can raise warnings but can never validate.
+
+The current run returns `MATCH_WITH_PROVIDER_WARNINGS`: every authoritative check agrees,
+while `sponsored` contradicts itself between two levels of the same response and the audit
+record never mentions allowance consumption. See [EVIDENCE.md](./EVIDENCE.md).
+
+An independent cross-check outside the agent, using KeeperHub's CLI — **not a runtime
+dependency**:
+
+```bash
+kh execute status no623hdfsrun2vzv3b25r --json
+```
+
 ## Why the simulation is consulted but not obeyed
 
 KeeperHub's simulator models a **direct ERC20 transfer from the delegate EOA**. The real
