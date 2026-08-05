@@ -157,13 +157,16 @@ What the partial scan does show, reproducibly:
 
 Result over that window: **1 incoming Transfer totalling 1 USDC, 0 outgoing totalling 0
 USDC.** The single incoming transfer is the incident transaction itself, at block 11418272.
+No other balance-affecting movement was observed during the window.
 
-So within the scanned window the balance was **0 USDC immediately before that transaction**
-and **1 USDC once it and its block completed** — consistent with the direct-path simulation
-reverting on `ERC20: transfer amount exceeds balance` while the Safe path succeeded.
+**What this does not establish.** The opening balance at block 11118272 is unknown, so the
+scan cannot conclude what the EOA held immediately before the incident transaction. Any
+transfer older than block 11118272 would not appear here. The exact historical EOA balance
+is therefore not independently established.
 
-Residual limit: any transfer older than block 11118272 would not appear here. Run the script
-against an archive node to close that gap.
+What is on the record: the provider simulator reported insufficient delegate-EOA balance for
+the 1 USDC direct-transfer path, while the Safe path succeeded. Run
+`scripts/prove-historical-balance.mjs` against an archive node to close the gap.
 
 ## Reproducible simulation false negative
 

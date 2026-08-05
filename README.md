@@ -148,7 +148,7 @@ simulation signal, execution details and the reconciled outcome.
 ## Tests
 
 ```bash
-npm test          # 37 tests, pure, no network
+npm test          # 42 tests, pure, no network
 npm run typecheck
 ```
 
@@ -186,5 +186,6 @@ enforces the policy; the Safe holds the funds and emits the `Transfer`.
 - The weekly cap is not read from the contract. What the agent _measures_ is the
   **remaining** allowance, by probing — which is what the decision actually needs.
 - No mainnet run: the hackathon requires onchain execution, not a specific network.
-- The Analytics REST API rejects organisation API keys, so run metadata and step logs are
-  recorded as unavailable rather than retrieved. That is provider coverage, not a verdict.
+- The organisation API key used for this run was rejected by the documented Analytics
+  endpoints; the underlying cause remains unresolved. Run metadata and step logs are
+  therefore recorded as unavailable rather than retrieved — provider coverage, not a verdict.
