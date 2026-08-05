@@ -1,3 +1,5 @@
+import type { AnalyticsAudit } from "./analytics";
+
 /**
  * Journal d'audit KeeperHub, normalisé.
  *
@@ -80,10 +82,10 @@ function amount(value: unknown): string | null {
 }
 
 export type AuditSources = {
-  /** Réponse de `get_direct_execution_status`. */
+  /** Réponse de `get_direct_execution_status` (MCP). */
   directStatus: unknown;
-  /** Réponse de `get_execution` si tentée (chemin workflow). */
-  workflowExecution?: { attempted: boolean; available: boolean; note: string };
+  /** Résultat de l'API Analytics REST, si interrogée. */
+  analytics?: AnalyticsAudit;
   /** Réponse de simulation si l'agent en a conservé une. */
   simulation?: unknown;
 };
@@ -111,11 +113,16 @@ export function normalizeAudit(input: AuditSources): KeeperHubAudit {
         : "Aucune charge exploitable renvoyée.",
     },
   ];
-  if (input.workflowExecution?.attempted) {
+  if (input.analytics) {
     sources.push({
-      surface: "mcp:get_execution",
-      available: input.workflowExecution.available,
-      note: input.workflowExecution.note,
+      surface: `rest:${input.analytics.run.probe.endpoint.split("?")[0]}`,
+      available: input.analytics.run.found,
+      note: input.analytics.run.probe.note,
+    });
+    sources.push({
+      surface: "rest:/api/analytics/runs/:id/steps",
+      available: input.analytics.steps.available,
+      note: input.analytics.steps.probe.note,
     });
   }
   if (input.simulation !== undefined) {

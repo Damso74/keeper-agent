@@ -67,7 +67,8 @@ npm run audit -- no623hdfsrun2vzv3b25r
 | Surface | Result |
 | --- | --- |
 | `mcp:get_direct_execution_status` | audit record retrieved |
-| `mcp:get_execution` | not exposed for a direct execution — attempted and recorded, not assumed |
+| `rest:/api/analytics/runs?source=direct` | queried with the organisation API key — see coverage below |
+| `rest:/api/analytics/runs/:id/steps` | queried with the organisation API key — see coverage below |
 
 Independent CLI cross-check, outside the agent (the CLI is **not** a runtime dependency):
 
@@ -92,12 +93,54 @@ chain; two provider-side warnings remain.
 | `SPONSORED_CONSISTENCY` | `sponsored: false` at the root, `sponsored: true` inside `executedCall` — **the same response contradicts itself** |
 | `POLICY_DISCLOSED_BY_PROVIDER` | the audit record never mentions allowance consumption; it exists only in on-chain evidence |
 
-The `sponsored` contradiction reproduces on the agent's own run, not just on the 2026-08-04
-incident — so it is systematic rather than a one-off.
+The `sponsored` contradiction is **reproduced across both observed executions** — the
+2026-08-04 incident and the agent's own run. Two observations, stated as two observations.
 
 **Verdict rules.** `MISMATCH` if any authoritative check diverges · `EVIDENCE_MISSING` if any
 is absent · `MATCH_WITH_PROVIDER_WARNINGS` if only provider signals are off · `MATCH`
 otherwise. A divergence outranks an absence, and **neither is ever turned into a success**.
+
+### Analytics REST coverage
+
+Both endpoints were queried with the organisation API key, on 2026-08-05:
+
+| Endpoint | HTTP | Outcome |
+| --- | --- | --- |
+| `GET /api/analytics/runs?source=direct&limit=50&page=1` | **401** | `{"error":"Authentication required"}` |
+| `GET /api/analytics/runs/no623hdfsrun2vzv3b25r/steps` | **403** | `{"error":"Organization not found"}` |
+
+Also tried and rejected: raw `Authorization`, `x-api-key`, and `Bearer` plus an
+`x-organization-id` header — all 401. `/api/v1/analytics/runs` returns a clean 404, so the
+path above is the right one; the API simply does not accept organisation API keys and
+expects a browser session.
+
+**This is provider coverage, not a verdict.** The audit records the endpoint, the status code
+and the note, marks the surface unavailable, and moves on. An absent Analytics record can
+never validate an execution and never turns into a false success — the authoritative checks
+run entirely on RPC evidence.
+
+## Historical balance proof — reproducible
+
+At the time of the 2026-08-04 simulation the delegate EOA held **0 USDC**. Public Sepolia
+RPCs no longer serve state at that height (`historical state is not available`), so the
+balance is reconstructed from event logs, which stay indexed on non-archive nodes.
+
+| | |
+| --- | --- |
+| Token | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` (USDC, 6 decimals) |
+| Address under test | `0x8FF41A30af4458E3C14C8843BDDcc37B7992ED58` (delegate EOA) |
+| Method | `eth_getLogs` on the token, `Transfer(address,address,uint256)` |
+| topic0 | `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef` |
+| Incoming filter | topic2 = the EOA, left-padded to 32 bytes |
+| Outgoing filter | topic1 = the EOA, left-padded to 32 bytes |
+| fromBlock → toBlock | `11118272` → `11418272`, in 49 000-block chunks (the node caps ranges at 50 000) |
+
+Result: **1 incoming Transfer, 0 outgoing.** The single incoming transfer is 1 USDC at block
+11418272 — the incident transaction itself.
+
+Therefore: **0 USDC immediately before that transaction**, and **1 USDC once the transaction
+and its block completed**. This is what made the direct-path simulation revert with
+`ERC20: transfer amount exceeds balance` while the Safe path succeeded.
 
 ## Reproducible simulation false negative
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { fetchAnalyticsAudit } from "./analytics";
 import { normalizeAudit } from "./audit";
 import { fetchChainEvidence } from "./chain-evidence";
 import { ADDRESSES, CHAIN_ID, RECIPIENT } from "./config";
@@ -6,77 +7,66 @@ import { KeeperHubClient } from "./keeperhub";
 import { reconcile } from "./reconcile";
 
 /**
- * Audit en lecture seule d'une exécution KeeperHub.
+ * Audit en lecture seule d'une exécution Treasury Drip.
  *
- *   npm run audit -- <executionId>
+ *   npm --silent run audit -- <executionId> | jq
  *
- * Récupère le journal d'audit du fournisseur, lit les preuves on-chain
- * indépendamment, puis réconcilie les deux. Aucune diffusion, aucune écriture,
- * aucun changement d'état. La clé API n'est jamais écrite dans la sortie.
+ * Récupère le journal MCP `get_direct_execution_status`, interroge l'API
+ * Analytics REST, lit les preuves on-chain indépendamment, puis réconcilie.
+ *
+ * Le JSON part sur **stdout**, les diagnostics sur **stderr** : la sortie reste
+ * pipeable. La clé API n'apparaît jamais dans le résultat.
+ *
+ * Aucune diffusion, aucune écriture, aucun changement d'état.
+ *
+ * Portée : cette commande réconcilie les exécutions Treasury Drip correspondant
+ * à la configuration attendue (Safe, Roles Modifier, token et destinataire de
+ * `config.ts`). Une exécution d'une autre configuration produira des divergences
+ * légitimes — ce n'est pas un auditeur générique.
  */
+
+const out = (value: unknown): void => {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+};
+
 async function main(): Promise<void> {
   const executionId = process.argv[2];
   if (!executionId || executionId.startsWith("-")) {
-    throw new Error("Usage : npm run audit -- <executionId>");
+    throw new Error("Usage : npm --silent run audit -- <executionId>");
   }
 
   const client = new KeeperHubClient();
   await client.connect();
-
   let directStatus: unknown = null;
-  let workflowExecution = {
-    attempted: false,
-    available: false,
-    note: "",
-  };
-
   try {
-    const status = await client.executionStatus(executionId);
-    directStatus = status.json;
-
-    // `get_execution` cible les exécutions de workflow. On la tente pour
-    // documenter honnêtement ce que KeeperHub expose — ou n'expose pas — pour
-    // une exécution directe, plutôt que d'affirmer sans avoir demandé.
-    workflowExecution = { attempted: true, available: false, note: "" };
-    try {
-      const workflow = await client.call("get_execution", { executionId });
-      const hasPayload = workflow.json !== null;
-      workflowExecution = {
-        attempted: true,
-        available: hasPayload,
-        note: hasPayload
-          ? "Journal de workflow également disponible."
-          : "Aucun journal de workflow : attendu pour une exécution directe.",
-      };
-    } catch (error) {
-      workflowExecution = {
-        attempted: true,
-        available: false,
-        note: `Non exposé pour une exécution directe (${String(error).slice(0, 90)}).`,
-      };
-    }
+    directStatus = (await client.executionStatus(executionId)).json;
   } finally {
     await client.close();
   }
 
-  const audit = normalizeAudit({ directStatus, workflowExecution });
+  // L'API Analytics est un service REST distinct du serveur MCP.
+  const analytics = await fetchAnalyticsAudit(executionId);
+  for (const probe of [analytics.run.probe, analytics.steps.probe]) {
+    if (!probe.available) process.stderr.write(`analytics ${probe.endpoint} : ${probe.note}\n`);
+  }
+
+  const audit = normalizeAudit({ directStatus, analytics });
 
   if (!audit.transactionHash) {
-    console.warn(
-      JSON.stringify(
-        {
-          executionId,
-          keeperHubAudit: audit,
-          chainEvidence: null,
-          reconciliation: {
-            verdict: "EVIDENCE_MISSING",
-            reason: "Le journal d'audit ne porte aucun hash de transaction à vérifier.",
-          },
-        },
-        null,
-        2,
-      ),
-    );
+    out({
+      executionId,
+      keeperHubAudit: audit,
+      analytics,
+      chainEvidence: null,
+      reconciliation: {
+        verdict: "EVIDENCE_MISSING",
+        checks: [],
+        mismatches: [],
+        missing: ["TRANSACTION_HASH"],
+        warnings: [],
+        reason: "Le journal d'audit ne porte aucun hash de transaction à vérifier.",
+      },
+    });
     process.exitCode = 1;
     return;
   }
@@ -91,16 +81,15 @@ async function main(): Promise<void> {
     chainId: CHAIN_ID,
   });
 
-  console.warn(
-    JSON.stringify({ executionId, keeperHubAudit: audit, chainEvidence: chain, reconciliation }, null, 2),
-  );
+  out({ executionId, keeperHubAudit: audit, analytics, chainEvidence: chain, reconciliation });
 
+  // MATCH et MATCH_WITH_PROVIDER_WARNINGS sortent en 0 : la chaîne concorde.
   if (reconciliation.verdict === "MISMATCH" || reconciliation.verdict === "EVIDENCE_MISSING") {
     process.exitCode = 1;
   }
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

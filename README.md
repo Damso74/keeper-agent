@@ -37,16 +37,32 @@ observe (RPC, direct)  →  decide (pure rule)  →  execute (KeeperHub MCP)  �
 
 ## Audit trail
 
-A read-only command pulls KeeperHub's audit record for any execution and reconciles it
-field by field against independent RPC evidence:
+A read-only command reconciles a **Treasury Drip execution** — one matching the Safe,
+Roles Modifier, token and recipient in `src/config.ts` — against independent RPC evidence.
+It is not a generic auditor: an execution from another configuration will legitimately
+report divergences.
 
 ```bash
-npm run audit -- no623hdfsrun2vzv3b25r
+npm --silent run audit -- no623hdfsrun2vzv3b25r | jq
 ```
 
-It emits JSON with three parts: `keeperHubAudit` (the provider's record, normalised),
-`chainEvidence` (read straight from RPC), and `reconciliation` (per-check results and a
-verdict). No broadcast, no state change, and the API key never reaches the output.
+JSON goes to **stdout**, diagnostics to **stderr**, so the output stays pipeable. Exit code
+is 0 for `MATCH` and `MATCH_WITH_PROVIDER_WARNINGS`, non-zero for `MISMATCH` and
+`EVIDENCE_MISSING`.
+
+Four parts come back: `keeperHubAudit` (the provider record, normalised), `analytics`
+(REST coverage), `chainEvidence` (read straight from RPC) and `reconciliation` (per-check
+results and a verdict). No broadcast, no state change, and the API key never reaches the
+output.
+
+**Surfaces queried**
+
+| Surface | Purpose |
+| --- | --- |
+| `mcp:execute_transfer` | execution (agent run) |
+| `mcp:get_direct_execution_status` | provider audit record |
+| `rest:/api/analytics/runs?source=direct` | run metadata, paginated lookup by execution id |
+| `rest:/api/analytics/runs/:id/steps` | step logs |
 
 **Verdict rules** — a divergence outranks an absence, and neither is ever turned into a
 success:
@@ -132,9 +148,16 @@ simulation signal, execution details and the reconciled outcome.
 ## Tests
 
 ```bash
-npm test        # decision rule + idempotency, pure, no network
+npm test          # 37 tests, pure, no network
 npm run typecheck
 ```
+
+Covered: the decision rule and its abstention codes; the idempotency window; audit
+normalisation; reconciliation across every verdict path (full match, wrong transaction hash,
+unverified receipt, missing or incomplete audit, provider timeout, `sponsored` contradiction,
+idempotent replay); Analytics coverage (run found, run absent, steps present, steps empty,
+steps unavailable); stdout JSON parseability; and an assertion that no API key ever appears
+in the output.
 
 ## Safety rails
 
@@ -163,5 +186,5 @@ enforces the policy; the Safe holds the funds and emits the `Transfer`.
 - The weekly cap is not read from the contract. What the agent _measures_ is the
   **remaining** allowance, by probing — which is what the decision actually needs.
 - No mainnet run: the hackathon requires onchain execution, not a specific network.
-- The agent does not yet consume the KeeperHub audit trail surface; reconciliation uses
-  `get_direct_execution_status` plus the on-chain receipt.
+- The Analytics REST API rejects organisation API keys, so run metadata and step logs are
+  recorded as unavailable rather than retrieved. That is provider coverage, not a verdict.
