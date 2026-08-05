@@ -1,0 +1,24 @@
+{
+  "name": "keeper-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Treasury Drip Agent — an autonomous agent that executes onchain through KeeperHub and refuses to report success unless the chain confirms it.",
+  "scripts": {
+    "agent": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "check": "tsx src/check.ts",
+    "simulate": "tsx src/simulate.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "viem": "^2.55.10"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2",
+    "vitest": "^2.1.9"
+  }
+}
