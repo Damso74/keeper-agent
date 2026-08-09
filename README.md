@@ -30,10 +30,24 @@ observe (RPC, direct)  →  decide (pure rule)  →  execute (KeeperHub MCP)  �
    idempotency key derived from the payout window. **No automatic retry** — the key
    protects against double effect, but re-firing after a timeout stays a human decision.
 
-4. **Reconcile.** The agent pulls `get_direct_execution_status` and only reports
-   `EXECUTED_VERIFIED` when the **receipt** says `success` and `verified: true`. If the
-   provider says `completed` and the chain has not confirmed, the outcome is
-   `EXECUTED_PENDING_VERIFICATION` and a note says so.
+4. **Wait.** `get_direct_execution_status` is polled until a terminal status or a
+   deadline. `queued`, `pending`, `running` and `unconfirmed` are all treated as
+   non-terminal — `unconfirmed` in particular means the transaction was broadcast but its
+   receipt is not yet readable, which is not a failure. The wait never re-sends
+   `execute_transfer`: the report carries `executeCalls`, and it is always `1`.
+
+5. **Verify independently.** The agent then fetches the transaction and its receipt
+   **directly by RPC** and decodes them itself. `EXECUTED_VERIFIED` requires every one of
+   these to hold on-chain: receipt status `success`, the expected chain id, the hash the
+   provider announced, sender = delegate EOA, top-level target = Roles Modifier, an ERC-20
+   `Transfer` from the **Safe** to the expected recipient, the exact token and amount,
+   `ExecutionFromModuleSuccess`, and a `ConsumeAllowance` equal to the amount transferred.
+
+   The provider's own `receipts[0].verified` is recorded as `providerVerified` for
+   comparison and **never** decides the outcome. If the two disagree, the report follows
+   the chain and says so. Anything short of full verification is
+   `EXECUTED_PENDING_VERIFICATION`; only a receipt the chain shows as reverted is `FAILED`.
+   An absent proof is never turned into either a success or a failure.
 
 ## Audit trail
 
@@ -142,13 +156,24 @@ npm run agent -- --execute    # observe + decide + execute through KeeperHub
 
 **Dry run is the default.** Broadcasting is never implicit.
 
-Output is a JSON report: observation, decision (with code and reason), idempotency key,
-simulation signal, execution details and the reconciled outcome.
+The JSON report goes to **stdout** and nothing else does, so it pipes into `jq` cleanly;
+diagnostics go to stderr. It carries the observation, the decision (with code and reason),
+the idempotency key, the simulation signal, the execution details and the independent
+verification.
+
+Exit codes distinguish the three outcomes that matter, because "not yet known" must never
+be read as success:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | verified on-chain, or no action taken, or dry run |
+| `1` | failure established — the chain shows a reverted receipt, or no execution id came back |
+| `2` | **indeterminate** — broadcast, but not yet verified. Poll again; do not re-send |
 
 ## Tests
 
 ```bash
-npm test          # 42 tests, pure, no network
+npm test          # 84 tests, no network
 npm run typecheck
 ```
 
@@ -158,6 +183,22 @@ unverified receipt, missing or incomplete audit, provider timeout, `sponsored` c
 idempotent replay); Analytics coverage (run found, run absent, steps present, steps empty,
 steps unavailable); stdout JSON parseability; and an assertion that no API key ever appears
 in the output.
+
+The execution engine itself is covered too, with the KeeperHub client and the RPC reads
+injected so the flow runs without a network:
+
+- exactly one non-simulated `execute_transfer`, and no re-send during a long non-terminal
+  wait — every call after it is a status read;
+- `unconfirmed` treated as non-terminal, then verified once the chain confirms;
+- deadline reached without proof produces the indeterminate outcome, never a retry;
+- a transaction that diverges on-chain, a missing proof, and an unreadable RPC each fail
+  closed;
+- **event provenance**: `ExecutionFromModuleSuccess` from anything other than the Safe, or
+  `ConsumeAllowance` from anything other than the Roles Modifier, is rejected — a matching
+  log emitted by an unrelated contract in the same transaction cannot validate an execution;
+- `extractJson` against a body followed by trailing diagnostics, nested objects, braces
+  inside strings and escaped quotes;
+- every `eth_call` of one observation carries the same pinned block tag, never `latest`.
 
 ## Safety rails
 

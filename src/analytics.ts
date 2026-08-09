@@ -1,4 +1,4 @@
-import { requireApiKey } from "./config";
+import { NETWORK_TIMEOUT_MS, requireApiKey } from "./config";
 
 /**
  * Client de l'API Analytics KeeperHub.
@@ -61,6 +61,7 @@ async function get(path: string): Promise<FetchOutcome> {
   try {
     const response = await fetch(`${BASE}${path}`, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
     });
     let body: unknown = null;
     try {

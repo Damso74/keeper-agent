@@ -1,6 +1,6 @@
 import { decodeEventLog, parseAbi } from "viem";
 
-import { RPC_URL } from "./config";
+import { NETWORK_TIMEOUT_MS, RPC_URL } from "./config";
 import type { ChainEvidence } from "./reconcile";
 
 /**
@@ -21,6 +21,7 @@ async function rpc(method: string, params: unknown[]): Promise<unknown> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`RPC ${method} HTTP ${response.status}`);
   const body = (await response.json()) as { result?: unknown; error?: { message?: string } };
@@ -61,6 +62,8 @@ export async function fetchChainEvidence(transactionHash: string): Promise<Chain
     moduleExecutionSuccess: false,
     allowanceConsumedRaw: null,
     allowanceRemainingRaw: null,
+    moduleSuccessEmitter: null,
+    allowanceEmitter: null,
   };
 
   const logs = Array.isArray(receipt?.logs) ? (receipt.logs as Array<Record<string, unknown>>) : [];
@@ -72,18 +75,36 @@ export async function fetchChainEvidence(transactionHash: string): Promise<Chain
         topics: log.topics as [`0x${string}`, ...`0x${string}`[]],
       });
       const args = decoded.args as Record<string, unknown>;
+      const emitter = typeof log.address === "string" ? log.address : null;
+
+      // Chaque événement est conservé AVEC son émetteur : un événement n'engage
+      // que le contrat qui l'a émis. La vérification compare ensuite ces
+      // adresses aux contrats attendus, de sorte qu'un log identique émis par un
+      // autre contrat de la même transaction ne peut pas valider l'exécution.
       if (decoded.eventName === "Transfer") {
-        evidence.transferToken = typeof log.address === "string" ? log.address : null;
-        evidence.transferFrom = typeof args.from === "string" ? args.from : null;
-        evidence.transferTo = typeof args.to === "string" ? args.to : null;
-        evidence.transferValueRaw = typeof args.value === "bigint" ? args.value.toString() : null;
+        // Premier Transfer retenu, pas le dernier : la sélection doit être
+        // déterministe. Si un leurre précède le vrai transfert, les contrôles de
+        // jeton, d'émetteur, de destinataire et de montant échouent — la
+        // vérification se ferme, elle ne s'ouvre jamais par erreur.
+        if (evidence.transferToken === null) {
+          evidence.transferToken = emitter;
+          evidence.transferFrom = typeof args.from === "string" ? args.from : null;
+          evidence.transferTo = typeof args.to === "string" ? args.to : null;
+          evidence.transferValueRaw = typeof args.value === "bigint" ? args.value.toString() : null;
+        }
       } else if (decoded.eventName === "ExecutionFromModuleSuccess") {
-        evidence.moduleExecutionSuccess = true;
+        if (!evidence.moduleExecutionSuccess) {
+          evidence.moduleExecutionSuccess = true;
+          evidence.moduleSuccessEmitter = emitter;
+        }
       } else if (decoded.eventName === "ConsumeAllowance") {
-        evidence.allowanceConsumedRaw =
-          typeof args.consumed === "bigint" ? args.consumed.toString() : null;
-        evidence.allowanceRemainingRaw =
-          typeof args.newBalance === "bigint" ? args.newBalance.toString() : null;
+        if (evidence.allowanceConsumedRaw === null) {
+          evidence.allowanceConsumedRaw =
+            typeof args.consumed === "bigint" ? args.consumed.toString() : null;
+          evidence.allowanceRemainingRaw =
+            typeof args.newBalance === "bigint" ? args.newBalance.toString() : null;
+          evidence.allowanceEmitter = emitter;
+        }
       }
     } catch {
       // Log non reconnu : ignoré, jamais deviné.

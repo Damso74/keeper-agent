@@ -24,6 +24,17 @@ export type ChainEvidence = {
   moduleExecutionSuccess: boolean;
   allowanceConsumedRaw: string | null;
   allowanceRemainingRaw: string | null;
+  /**
+   * Adresses ayant réellement émis les événements de module.
+   *
+   * Un événement est une affirmation faite par le contrat qui l'émet, et par lui
+   * seul. Sans l'émetteur, n'importe quel contrat impliqué dans la même
+   * transaction pourrait émettre `ExecutionFromModuleSuccess` ou
+   * `ConsumeAllowance` et satisfaire la vérification. Ces champs permettent de
+   * remonter la provenance jusqu'au Safe et au Roles Modifier attendus.
+   */
+  moduleSuccessEmitter?: string | null;
+  allowanceEmitter?: string | null;
 };
 
 export type Expectations = {

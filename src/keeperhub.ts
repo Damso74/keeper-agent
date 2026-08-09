@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { KEEPERHUB_MCP_URL, requireApiKey } from "./config";
+import { assertSecureUrl, KEEPERHUB_MCP_URL, requireApiKey } from "./config";
 
 /**
  * Client MCP KeeperHub pour usage headless.
@@ -22,29 +22,72 @@ export type ToolResult = { raw: unknown; text: string; json: unknown | null };
  * `API call failed: 400 Bad Request - {"wouldRevert":true,...}`.
  * Ne lire que `JSON.parse(text)` fait perdre toute l'information de diagnostic —
  * précisément celle qui révèle le faux négatif de simulation.
+ *
+ * Le JSON n'est plus forcément en fin de message : depuis KeeperHub#1976 le
+ * diagnostic actionnable est ajouté **après** le corps. Découper à la première
+ * accolade et parser jusqu'à la fin échoue donc désormais. On isole l'objet en
+ * comptant les accolades, en ignorant celles qui sont à l'intérieur d'une
+ * chaîne JSON et celles qui sont échappées.
  */
 export function extractJson(text: string): unknown | null {
   if (!text) return null;
   try {
     return JSON.parse(text);
   } catch {
-    // Corps JSON encapsulé dans un message d'erreur.
+    // Corps JSON encapsulé dans un message : on va l'isoler ci-dessous.
   }
-  const start = text.indexOf("{");
-  if (start === -1) return null;
-  try {
-    return JSON.parse(text.slice(start));
-  } catch {
-    return null;
+
+  // Plusieurs objets peuvent apparaître ; on retourne le premier qui parse.
+  for (let start = text.indexOf("{"); start !== -1; start = text.indexOf("{", start + 1)) {
+    const candidate = balancedObjectAt(text, start);
+    if (candidate === null) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Accolades équilibrées mais JSON invalide : on tente l'objet suivant.
+    }
   }
+  return null;
+}
+
+/**
+ * Renvoie la sous-chaîne `{...}` équilibrée qui commence à `start`, ou `null`
+ * si elle ne se referme jamais. Les accolades entre guillemets ne comptent pas,
+ * et un guillemet précédé d'un backslash n'ouvre ni ne ferme une chaîne.
+ */
+function balancedObjectAt(text: string, start: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 export class KeeperHubClient {
   private client: Client | null = null;
 
   async connect(): Promise<void> {
+    // L'URL est validée AVANT de lire la clé : rien ne part sur un canal clair.
+    const endpoint = assertSecureUrl(KEEPERHUB_MCP_URL);
     const apiKey = requireApiKey();
-    const transport = new StreamableHTTPClientTransport(new URL(KEEPERHUB_MCP_URL), {
+    const transport = new StreamableHTTPClientTransport(endpoint, {
       requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
     });
     const client = new Client(

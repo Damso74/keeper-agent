@@ -39,6 +39,53 @@ export const RPC_URL = process.env.SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-
 
 export const KEEPERHUB_MCP_URL = process.env.KEEPERHUB_MCP_URL ?? "https://app.keeperhub.com/mcp";
 
+/** Toute requête réseau est bornée : un endpoint muet ne doit pas figer l'agent. */
+export const NETWORK_TIMEOUT_MS = Number(process.env.KEEPER_NETWORK_TIMEOUT_MS ?? 15_000);
+
+/**
+ * Refuse d'envoyer la clé ailleurs que sur un canal chiffré.
+ *
+ * `localhost` est toléré en clair pour le développement : la clé ne quitte pas
+ * la machine. Tout autre hôte en `http://` est rejeté **avant** l'envoi, pas
+ * après — une clé transmise en clair est déjà compromise.
+ */
+export function assertSecureUrl(rawUrl: string): URL {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error(`URL KeeperHub invalide : ${rawUrl}`);
+  }
+  const isLoopback = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !isLoopback) {
+    throw new Error(
+      `Refus d'envoyer la clé API vers ${url.protocol}//${url.host} : HTTPS obligatoire ` +
+        "(seul localhost est toléré en clair).",
+    );
+  }
+  return url;
+}
+
+/**
+ * Convertit un montant décimal en unités brutes, sans passer par `Number`.
+ *
+ * `Number("0.1") * 1e6` puis `Math.round` fonctionne pour 0,1 mais perd de la
+ * précision dès que le montant dépasse la plage exacte du flottant. Le parsing
+ * se fait donc sur la chaîne, en base 10, et refuse tout ce qui n'est pas un
+ * décimal positif.
+ */
+export function parseAmount(input: string, decimals = TOKEN.decimals): bigint {
+  const trimmed = input.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error(`Montant invalide : ${input} (attendu un décimal positif, ex. 0.1)`);
+  }
+  const [integer, fraction = ""] = trimmed.split(".");
+  if (fraction.length > decimals) {
+    throw new Error(`Montant ${input} : plus de ${decimals} décimales pour ${TOKEN.symbol}.`);
+  }
+  return BigInt(integer + fraction.padEnd(decimals, "0"));
+}
+
 export function requireApiKey(): string {
   const key = process.env.KEEPERHUB_API_KEY;
   if (!key) {

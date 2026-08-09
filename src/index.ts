@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { runAgent } from "./run";
+import { exitCodeFor, runAgent } from "./run";
 
 /**
  * Treasury Drip Agent — point d'entrée.
@@ -13,9 +13,15 @@ async function main(): Promise<void> {
   const execute = process.argv.includes("--execute");
 
   const report = await runAgent({ dryRun: !execute });
-  console.warn(JSON.stringify(report, null, 2));
 
-  if (report.outcome === "FAILED") process.exitCode = 1;
+  // Contrat de sortie : le rapport JSON, et rien d'autre, sur stdout — il doit
+  // pouvoir être redirigé vers `jq` ou un fichier sans être pollué. Les
+  // diagnostics vont sur stderr.
+  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+
+  // 0 vérifié / sans action · 1 échec constaté · 2 indéterminé (à ne pas
+  // confondre avec un succès).
+  process.exitCode = exitCodeFor(report.outcome);
 }
 
 main().catch((error) => {

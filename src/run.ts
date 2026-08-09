@@ -9,16 +9,40 @@ import {
   SAFETY_MARGIN_RAW,
   TOKEN,
 } from "./config";
-import { observe, rpcCallsMade } from "./chain";
+import { type ChainObservation, observe as observeChain, rpcCallsMade } from "./chain";
+import { fetchChainEvidence as fetchEvidence } from "./chain-evidence";
 import { decide, type Decision } from "./decide";
-import { KeeperHubClient } from "./keeperhub";
+import { KeeperHubClient, type ToolResult } from "./keeperhub";
+import type { ChainEvidence } from "./reconcile";
+import { type Verification, verifyExecution } from "./verify";
 
 /**
- * Boucle de l'agent : observer → décider → exécuter → réconcilier.
+ * Boucle de l'agent : observer → décider → exécuter → attendre → vérifier.
  *
  * En mode `dryRun` (défaut) rien n'est diffusé : l'agent observe et décide, et
  * s'arrête là. La diffusion demande un choix explicite de l'opérateur.
+ *
+ * Deux invariants gouvernent la fin de la boucle :
+ *
+ * 1. **Un seul `execute_transfer` non simulé, jamais réémis.** L'attente se fait
+ *    en interrogeant le statut ; réémettre l'exécution pour « relancer » est
+ *    exactement le geste qui double un transfert.
+ * 2. **`EXECUTED_VERIFIED` ne vient que de la chaîne.** Le champ `verified` du
+ *    fournisseur est enregistré comme signal, jamais comme preuve.
  */
+
+/** Statuts terminaux côté fournisseur. Tout le reste demande d'attendre. */
+const TERMINAL_STATUSES = new Set(["completed", "failed"]);
+
+/**
+ * `unconfirmed` est explicitement non terminal : KeeperHub l'utilise pour une
+ * transaction diffusée dont le receipt n'est pas encore lisible. La traiter
+ * comme un échec est ce qui pousse un appelant à réémettre.
+ */
+const NON_TERMINAL_STATUSES = new Set(["queued", "pending", "running", "unconfirmed"]);
+
+export const POLL_INTERVAL_MS = 3_000;
+export const POLL_TIMEOUT_MS = 120_000;
 
 export type AgentReport = {
   agent: string;
@@ -37,14 +61,22 @@ export type AgentReport = {
   simulation: { ran: boolean; wouldRevert: boolean | null; note: string } | null;
   execution: {
     attempted: boolean;
+    /** Nombre d'appels d'exécution non simulés. Doit valoir 1, jamais plus. */
+    executeCalls: number;
     executionId: string | null;
     transactionHash: string | null;
-    status: string | null;
-    receiptStatus: string | null;
+    /** Statut déclaré par le fournisseur. Signal, pas preuve. */
+    providerStatus: string | null;
+    providerReceiptStatus: string | null;
+    /** `receipts[0].verified` du fournisseur, conservé pour comparaison. */
+    providerVerified: boolean | null;
     gasUsed: string | null;
-    verified: boolean | null;
     explorerUrl: string | null;
+    pollAttempts: number;
+    timedOut: boolean;
   } | null;
+  /** Vérification RPC indépendante. `null` si aucun hash n'a pu être vérifié. */
+  verification: Verification | null;
   /** Le rapport n'affirme jamais un succès sur la seule parole du fournisseur. */
   outcome:
     | "NO_ACTION"
@@ -55,7 +87,61 @@ export type AgentReport = {
   notes: string[];
 };
 
-type RunOptions = { dryRun: boolean; now?: Date; dripsThisWindow?: number };
+/**
+ * Code de sortie du CLI, distinct par issue.
+ *
+ * `EXECUTED_PENDING_VERIFICATION` ne peut pas partager le code de succès : un
+ * appelant qui teste `exit 0` traiterait alors « je ne sais pas encore » comme
+ * « c'est vérifié », ce qui est précisément la confusion que cet agent refuse.
+ *
+ * 0 = issue établie et non problématique · 1 = échec constaté · 2 = indéterminé.
+ */
+export function exitCodeFor(outcome: AgentReport["outcome"]): 0 | 1 | 2 {
+  if (outcome === "FAILED") return 1;
+  if (outcome === "EXECUTED_PENDING_VERIFICATION") return 2;
+  return 0;
+}
+
+/** Surface minimale du client d'exécution, pour pouvoir l'injecter en test. */
+export type ExecutionClient = {
+  connect(): Promise<void>;
+  executeTransfer(input: {
+    chainId: number;
+    tokenAddress: string;
+    toAddress: string;
+    amount: string;
+    idempotencyKey: string;
+    simulate?: boolean;
+  }): Promise<ToolResult>;
+  executionStatus(executionId: string): Promise<ToolResult>;
+  close(): Promise<void>;
+};
+
+export type RunDeps = {
+  observe: (upperBound: bigint, now: Date) => Promise<ChainObservation>;
+  createClient: () => ExecutionClient;
+  fetchChainEvidence: (transactionHash: string) => Promise<ChainEvidence>;
+  sleep: (ms: number) => Promise<void>;
+  nowMs: () => number;
+  pollIntervalMs: number;
+  pollTimeoutMs: number;
+};
+
+export type RunOptions = {
+  dryRun: boolean;
+  now?: Date;
+  deps?: Partial<RunDeps>;
+};
+
+const defaultDeps: RunDeps = {
+  observe: observeChain,
+  createClient: () => new KeeperHubClient(),
+  fetchChainEvidence: fetchEvidence,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  nowMs: () => Date.now(),
+  pollIntervalMs: POLL_INTERVAL_MS,
+  pollTimeoutMs: POLL_TIMEOUT_MS,
+};
 
 function pick(json: unknown, path: string[]): unknown {
   let current: unknown = json;
@@ -66,7 +152,33 @@ function pick(json: unknown, path: string[]): unknown {
   return current ?? null;
 }
 
+function asString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+type StatusSnapshot = {
+  providerStatus: string | null;
+  transactionHash: string | null;
+  receiptStatus: string | null;
+  gasUsed: string | null;
+  providerVerified: boolean | null;
+};
+
+function readStatus(json: unknown): StatusSnapshot {
+  const receipts = pick(json, ["receipts"]);
+  const first = Array.isArray(receipts) ? (receipts[0] as Record<string, unknown> | undefined) : undefined;
+  const verified = first?.verified;
+  return {
+    providerStatus: asString(pick(json, ["status"])),
+    transactionHash: asString(pick(json, ["transactionHash"])),
+    receiptStatus: asString(first?.receiptStatus),
+    gasUsed: typeof first?.gasUsed === "string" ? first.gasUsed : null,
+    providerVerified: typeof verified === "boolean" ? verified : null,
+  };
+}
+
 export async function runAgent(options: RunOptions): Promise<AgentReport> {
+  const deps: RunDeps = { ...defaultDeps, ...options.deps };
   const now = options.now ?? new Date();
   const notes: string[] = [];
   const window = currentWindow(now);
@@ -74,7 +186,7 @@ export async function runAgent(options: RunOptions): Promise<AgentReport> {
 
   // 1. OBSERVER — état lu en direct sur la chaîne, jamais depuis un rapport.
   // La borne haute de la recherche dichotomique est le plafond hebdomadaire.
-  const observation = await observe(5_000_000n, now);
+  const observation = await deps.observe(5_000_000n, now);
 
   // 2. DÉCIDER — fonction pure, rejouable par un tiers.
   const decision: Decision = decide({
@@ -82,7 +194,6 @@ export async function runAgent(options: RunOptions): Promise<AgentReport> {
     safeTokenBalanceRaw: observation.safeTokenBalanceRaw,
     dripAmountRaw: DRIP_AMOUNT_RAW,
     safetyMarginRaw: SAFETY_MARGIN_RAW,
-    dripsThisWindow: options.dripsThisWindow ?? 0,
   });
 
   const base: AgentReport = {
@@ -106,6 +217,7 @@ export async function runAgent(options: RunOptions): Promise<AgentReport> {
     idempotencyKey: key,
     simulation: null,
     execution: null,
+    verification: null,
     outcome: "NO_ACTION",
     notes,
   };
@@ -121,7 +233,7 @@ export async function runAgent(options: RunOptions): Promise<AgentReport> {
   }
 
   // 3. EXÉCUTER — via KeeperHub, une seule fois, avec clé d'idempotence.
-  const keeperhub = new KeeperHubClient();
+  const keeperhub = deps.createClient();
   await keeperhub.connect();
   try {
     // La simulation est consultée mais NON bloquante : elle modélise un appel
@@ -159,65 +271,153 @@ export async function runAgent(options: RunOptions): Promise<AgentReport> {
       amount: formatUnits(decision.amountRaw),
       idempotencyKey: key,
     });
+    const executeCalls = 1;
 
-    const executionId = pick(executed.json, ["executionId"]);
-    if (typeof executionId !== "string") {
-      notes.push("Aucun executionId renvoyé : impossible de réconcilier.");
+    const executionId = asString(pick(executed.json, ["executionId"]));
+    if (executionId === null) {
+      notes.push(
+        "Aucun executionId renvoyé : impossible de réconcilier. Aucune réémission automatique.",
+      );
       return {
         ...base,
         simulation,
         execution: {
           attempted: true,
+          executeCalls,
           executionId: null,
           transactionHash: null,
-          status: null,
-          receiptStatus: null,
+          providerStatus: null,
+          providerReceiptStatus: null,
+          providerVerified: null,
           gasUsed: null,
-          verified: null,
           explorerUrl: null,
+          pollAttempts: 0,
+          timedOut: false,
         },
+        verification: null,
         outcome: "FAILED",
       };
     }
 
-    // 4. RÉCONCILIER — statut fournisseur ET receipt on-chain.
-    const status = await keeperhub.executionStatus(executionId);
-    const txHash = pick(status.json, ["transactionHash"]);
-    const receipts = pick(status.json, ["receipts"]);
-    const firstReceipt = Array.isArray(receipts) ? (receipts[0] as Record<string, unknown>) : null;
-    const receiptStatus = firstReceipt?.receiptStatus ?? null;
-    const verified = firstReceipt?.verified ?? null;
+    // 4. ATTENDRE — on interroge le statut, on ne réémet jamais l'exécution.
+    const deadline = deps.nowMs() + deps.pollTimeoutMs;
+    let snapshot: StatusSnapshot = {
+      providerStatus: null,
+      transactionHash: null,
+      receiptStatus: null,
+      gasUsed: null,
+      providerVerified: null,
+    };
+    let pollAttempts = 0;
+    let timedOut = false;
 
-    const providerSaysDone = pick(status.json, ["status"]) === "completed";
-    const chainSaysOk = receiptStatus === "success" && verified === true;
+    for (;;) {
+      const status = await keeperhub.executionStatus(executionId);
+      pollAttempts += 1;
+      const next = readStatus(status.json);
+      snapshot = {
+        ...next,
+        // Un hash déjà vu ne doit pas disparaître d'une réponse à l'autre.
+        transactionHash: next.transactionHash ?? snapshot.transactionHash,
+      };
 
-    if (providerSaysDone && !chainSaysOk) {
+      if (snapshot.providerStatus !== null && TERMINAL_STATUSES.has(snapshot.providerStatus)) break;
+      if (deps.nowMs() >= deadline) {
+        timedOut = true;
+        break;
+      }
+      await deps.sleep(deps.pollIntervalMs);
+    }
+
+    if (timedOut) {
       notes.push(
-        "Le fournisseur déclare 'completed' mais le receipt on-chain ne le confirme pas encore.",
+        `Statut non terminal après ${deps.pollTimeoutMs} ms (${snapshot.providerStatus ?? "inconnu"}). ` +
+          "L'exécution n'est ni confirmée ni infirmée : aucune réémission.",
       );
     }
-    if (simulation?.wouldRevert === true) {
+    if (snapshot.providerStatus !== null && NON_TERMINAL_STATUSES.has(snapshot.providerStatus)) {
       notes.push(
-        "Faux négatif de simulation confirmé : échec prédit, exécution poursuivie et réconciliée.",
+        `Statut fournisseur '${snapshot.providerStatus}' : non terminal, la transaction peut encore atterrir.`,
       );
     }
+
+    // 5. VÉRIFIER — preuve RPC indépendante, décodée depuis le receipt.
+    let verification: Verification | null = null;
+    if (snapshot.transactionHash !== null) {
+      try {
+        const evidence = await deps.fetchChainEvidence(snapshot.transactionHash);
+        verification = verifyExecution({
+          evidence,
+          expected: {
+            safe: ADDRESSES.safe,
+            rolesModifier: ADDRESSES.rolesModifier,
+            delegateEoa: ADDRESSES.delegateEoa,
+            token: ADDRESSES.token,
+            recipient: RECIPIENT,
+            chainId: CHAIN_ID,
+          },
+          amountRaw: decision.amountRaw,
+          expectedTransactionHash: snapshot.transactionHash,
+        });
+      } catch (error) {
+        notes.push(
+          `Preuve on-chain illisible (${String(error).slice(0, 120)}) : succès non déclaré.`,
+        );
+      }
+    } else {
+      notes.push("Aucun hash de transaction : rien à vérifier sur la chaîne.");
+    }
+
+    if (verification !== null && !verification.verified) {
+      if (verification.failed.length > 0) {
+        notes.push(`Divergence on-chain : ${verification.failed.join(", ")}.`);
+      }
+      if (verification.missing.length > 0) {
+        notes.push(`Preuves absentes : ${verification.missing.join(", ")}.`);
+      }
+    }
+    if (snapshot.providerVerified === true && verification?.verified !== true) {
+      notes.push(
+        "Le fournisseur déclare la transaction vérifiée ; la chaîne ne le confirme pas. " +
+          "Le rapport suit la chaîne.",
+      );
+    }
+    if (simulation?.wouldRevert === true && verification?.verified === true) {
+      notes.push(
+        "Faux négatif de simulation confirmé : échec prédit, exécution vérifiée sur la chaîne.",
+      );
+    }
+
+    const chainSaysReverted =
+      verification !== null &&
+      verification.checks.some((c) => c.id === "RECEIPT_STATUS_SUCCESS" && c.observed === "failed");
+
+    let outcome: AgentReport["outcome"];
+    if (verification?.verified === true) outcome = "EXECUTED_VERIFIED";
+    else if (chainSaysReverted) outcome = "FAILED";
+    else outcome = "EXECUTED_PENDING_VERIFICATION";
 
     return {
       ...base,
       simulation,
       execution: {
         attempted: true,
+        executeCalls,
         executionId,
-        transactionHash: typeof txHash === "string" ? txHash : null,
-        status: (pick(status.json, ["status"]) as string | null) ?? null,
-        receiptStatus: (receiptStatus as string | null) ?? null,
-        gasUsed: (firstReceipt?.gasUsed as string | null) ?? null,
-        verified: typeof verified === "boolean" ? verified : null,
+        transactionHash: snapshot.transactionHash,
+        providerStatus: snapshot.providerStatus,
+        providerReceiptStatus: snapshot.receiptStatus,
+        providerVerified: snapshot.providerVerified,
+        gasUsed: snapshot.gasUsed,
         explorerUrl:
-          typeof txHash === "string" ? `https://sepolia.etherscan.io/tx/${txHash}` : null,
+          snapshot.transactionHash !== null
+            ? `https://sepolia.etherscan.io/tx/${snapshot.transactionHash}`
+            : null,
+        pollAttempts,
+        timedOut,
       },
-      // Le succès n'est déclaré que si la CHAÎNE le confirme.
-      outcome: chainSaysOk ? "EXECUTED_VERIFIED" : "EXECUTED_PENDING_VERIFICATION",
+      verification,
+      outcome,
     };
   } finally {
     await keeperhub.close();

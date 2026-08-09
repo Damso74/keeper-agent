@@ -6,6 +6,14 @@ import { formatUnits, TOKEN } from "./config";
  * Fonction pure et totale : mêmes entrées → même décision, sans réseau, sans
  * horloge implicite, sans aléa, sans LLM. C'est ce qui la rend auditable — un
  * tiers peut rejouer la décision et obtenir exactement le même résultat.
+ *
+ * **Unicité du versement.** Cette fonction ne compte pas les versements déjà
+ * effectués dans la fenêtre : elle n'a aucun état persistant à interroger, et un
+ * compteur câblé à zéro serait un garde-fou décoratif. L'unicité repose
+ * entièrement sur la **clé d'idempotence KeeperHub** — `drip-<fenêtre>-<montant>`,
+ * stable par construction — qui fait qu'un second appel identique rejoue le
+ * résultat d'origine au lieu d'émettre un second transfert. C'est une garantie
+ * côté fournisseur, énoncée ici plutôt que simulée localement.
  */
 
 export type DecisionInput = {
@@ -13,13 +21,10 @@ export type DecisionInput = {
   safeTokenBalanceRaw: bigint;
   dripAmountRaw: bigint;
   safetyMarginRaw: bigint;
-  /** Versements déjà effectués par l'agent dans la fenêtre courante. */
-  dripsThisWindow: number;
 };
 
 export type DecisionCode =
   | "DRIP"
-  | "SKIP_ALREADY_DRIPPED_THIS_WINDOW"
   | "SKIP_ALLOWANCE_INSUFFICIENT"
   | "SKIP_SAFE_BALANCE_INSUFFICIENT"
   | "SKIP_AMOUNT_NOT_POSITIVE";
@@ -33,13 +38,7 @@ export type Decision = {
 };
 
 export function decide(input: DecisionInput): Decision {
-  const {
-    remainingAllowanceRaw,
-    safeTokenBalanceRaw,
-    dripAmountRaw,
-    safetyMarginRaw,
-    dripsThisWindow,
-  } = input;
+  const { remainingAllowanceRaw, safeTokenBalanceRaw, dripAmountRaw, safetyMarginRaw } = input;
 
   const amount = `${formatUnits(dripAmountRaw, TOKEN.decimals)} ${TOKEN.symbol}`;
   const remaining = `${formatUnits(remainingAllowanceRaw, TOKEN.decimals)} ${TOKEN.symbol}`;
@@ -49,15 +48,6 @@ export function decide(input: DecisionInput): Decision {
       act: false,
       code: "SKIP_AMOUNT_NOT_POSITIVE",
       reason: "Le montant de versement configuré n'est pas strictement positif.",
-      amountRaw: dripAmountRaw,
-    };
-  }
-
-  if (dripsThisWindow > 0) {
-    return {
-      act: false,
-      code: "SKIP_ALREADY_DRIPPED_THIS_WINDOW",
-      reason: `Un versement a déjà eu lieu dans la fenêtre courante (${dripsThisWindow}).`,
       amountRaw: dripAmountRaw,
     };
   }

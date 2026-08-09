@@ -8,7 +8,6 @@ const BASE: DecisionInput = {
   safeTokenBalanceRaw: 4_000_000n,
   dripAmountRaw: 100_000n, // 0,1 USDC
   safetyMarginRaw: 50_000n,
-  dripsThisWindow: 0,
 };
 
 describe("règle de décision", () => {
@@ -17,12 +16,6 @@ describe("règle de décision", () => {
     expect(decision.act).toBe(true);
     expect(decision.code).toBe("DRIP");
     expect(decision.reason).toContain("4 USDC");
-  });
-
-  it("s'abstient si un versement a déjà eu lieu dans la fenêtre", () => {
-    const decision = decide({ ...BASE, dripsThisWindow: 1 });
-    expect(decision.act).toBe(false);
-    expect(decision.code).toBe("SKIP_ALREADY_DRIPPED_THIS_WINDOW");
   });
 
   it("s'abstient si l'allocation ne couvre pas le versement plus la marge", () => {
@@ -56,7 +49,7 @@ describe("règle de décision", () => {
   it("expose toujours une raison lisible", () => {
     for (const input of [
       BASE,
-      { ...BASE, dripsThisWindow: 2 },
+      { ...BASE, dripAmountRaw: 0n },
       { ...BASE, remainingAllowanceRaw: 0n },
       { ...BASE, safeTokenBalanceRaw: 0n },
     ]) {

@@ -19,8 +19,11 @@ supporting evidence for the reliability argument, not the execution proof.
 
 ## Autonomous agent run — 2026-08-05
 
-**2026-08-05, Ethereum Sepolia.** The agent observed chain state, decided on its own, and
-executed through KeeperHub. No human chose the moment or the amount.
+**2026-08-05, Ethereum Sepolia.** The operator initiated the run; the agent independently
+observed, decided and executed without intervention. The decision rule, the amount and the
+choice to act were the agent's, applied to state it read itself — but the run itself was
+started by a human invoking `npm run agent -- --execute`, and saying otherwise would
+overstate it.
 
 |                        |                                                                                                                                                                            |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

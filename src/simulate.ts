@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { ADDRESSES, CHAIN_ID, RECIPIENT } from "./config";
+import { ADDRESSES, CHAIN_ID, parseAmount, RECIPIENT } from "./config";
 import { policyAccepts } from "./chain";
 import { KeeperHubClient } from "./keeperhub";
 
@@ -15,10 +15,11 @@ import { KeeperHubClient } from "./keeperhub";
  */
 async function main(): Promise<void> {
   const amount = process.argv[2];
-  if (!amount || !/^\d+(\.\d+)?$/.test(amount)) {
+  if (!amount) {
     throw new Error("Usage : npm run simulate -- <montant en USDC>, ex. 2");
   }
-  const raw = BigInt(Math.round(Number(amount) * 1e6));
+  // Parsing décimal exact : pas de passage par un flottant, donc pas d'arrondi.
+  const raw = parseAmount(amount);
 
   const chainAccepts = await policyAccepts(raw);
 
