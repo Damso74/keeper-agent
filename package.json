@@ -21,5 +21,9 @@
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
     "vitest": "^2.1.9"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
   }
 }

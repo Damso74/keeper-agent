@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      # Aucun secret n'est fourni à ce job : les tests ne touchent pas le
+      # réseau, et un test qui exigerait une clé serait un test à réécrire.
+
+      # Bloquant : ce que l'agent embarque réellement à l'exécution.
+      - name: Audit des dépendances de production
+        run: npm audit --omit=dev --audit-level=high
+
+      # Non bloquant : l'outillage de test. Au 2026-08-09, vitest/vite portent
+      # 5 avis (1 critique, 1 haute) qui ne concernent que le serveur de
+      # développement et l'UI vitest, jamais exécutés ici. Le rapport reste
+      # affiché plutôt que masqué : c'est une dette visible, pas une exception
+      # silencieuse. La corriger impose vitest 4.x, un changement de version
+      # majeure à traiter séparément.
+      - name: Audit complet (informatif)
+        run: npm audit
+        continue-on-error: true
