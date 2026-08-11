@@ -193,7 +193,7 @@ export function reconcile(
           : "MISMATCH",
     audit: null,
     chain: chain.transferFrom,
-    note: "Le Safe doit être l'émetteur du transfert ERC20.",
+    note: "Le log Transfer émis par le contrat USDC doit contenir le Safe dans le champ from.",
   });
 
   checks.push(
