@@ -2,7 +2,11 @@
 
 While shipping a real KeeperHub agent, we found reproducible integration gaps and
 documented concrete improvements for the next builder. Everything below comes from
-building Keeper Agent against the live KeeperHub MCP server on Ethereum Sepolia.
+building Treasury Drip Agent against the live KeeperHub MCP server on Ethereum Sepolia.
+
+**Upstream status — 2026-08-11:** the verified-transaction guide is
+[merged and live](https://docs.keeperhub.com/guides/first-verified-transaction). The MCP
+diagnostics fix is [open, mergeable and under re-review](https://github.com/KeeperHub/keeperhub/pull/1976).
 
 ## How to read this document
 
@@ -28,7 +32,7 @@ These are distinct and are never merged into a single claim:
 | Broadcast | yes | yes | **no broadcast** |
 | Lives in | this repository | ProofGate fixture | ProofGate scenario B |
 
-The bounty submission's execution proof is the **autonomous 0.1 USDC run**.
+The bounty submission's execution proof is the **operator-initiated 0.1 USDC agent run**.
 
 ---
 
@@ -89,7 +93,8 @@ the Safe caveat. No change to the simulator.
 ## Observation 2 — Structured diagnostics hidden behind HTTP 400
 
 **1. Observation.** A dry-run revert surfaced over MCP as a single line of the form
-`API call failed: 400 Bad Request - {"wouldRevert":true,...}`, with the useful JSON
+`API call failed: 400 Bad Request - {"wouldRevert":true,"failureKind":"revert",...}`,
+with the useful JSON
 embedded in an error string.
 
 **2. Reproduction context.** Same run as Observation 1, over the KeeperHub MCP server.
@@ -103,10 +108,12 @@ entire diagnostic payload. This repository carries a workaround for exactly that
 `extractJson` in `src/keeperhub.ts`.
 
 **5. New-builder impact.** This is the highest-friction item we hit. The REST reference
-tells callers to read `wouldRevert` before classifying a 400, because the status
-describes the transaction rather than the request. An MCP caller could not follow that
-advice, and the MCP reference's error table listed `400` as "Invalid parameters" —
-pointing away from the real cause.
+exposes structured simulation fields. A true simulated revert is distinguished by
+`wouldRevert: true` together with `failureKind: "revert"`; request-validation failures use
+a different `failureKind`. An MCP caller could not reliably act on those fields because
+they were embedded in the error string, and the MCP reference's error table listed `400`
+as "Invalid parameters" — pointing away from the real cause.
+
 
 **6. Evidence.** `EVIDENCE.md`, and the workaround in `src/keeperhub.ts` written before
 we had read upstream source.
@@ -121,12 +128,15 @@ for 400.
 
 **9. Implemented change.** PR 1. The original message is kept first so callers that
 pattern-match the status line are unaffected; the stage, decoded reason, machine-readable
-`code`, and simulated sender are appended. Only bodies carrying `wouldRevert: true` are
-augmented, so ordinary validation 400s stay verbatim.
+`code`, and simulated sender are appended. A hint is added only when the message starts
+with the exact HTTP 400 prefix and the body carries both `wouldRevert: true` and
+`failureKind: "revert"`. Simulator validation failures and other errors stay verbatim.
 
-**10. Verification.** 15 unit tests, including the untouched cases (validation 400,
-non-JSON body, empty body, non-object JSON, 500, success) and the untrusted-input cases
-(a revert string cannot forge diagnostic lines; oversized strings are capped).
+**10. Verification.** 16 unit tests, including route-level and simulator validation
+failures, non-JSON and non-object bodies, an embedded 400 string inside a 500, success,
+no-timeout passthrough, and untrusted-input cases. A revert string cannot forge appended
+diagnostic lines, and the appended `Reason:` copy is capped while the original line stays
+verbatim for compatibility.
 
 ---
 
@@ -136,7 +146,7 @@ non-JSON body, empty body, non-object JSON, 500, success) and the untrusted-inpu
 root and `sponsored: true` inside `executedCall`.
 
 **2. Reproduction context.** Observed on both broadcast executions: the 2026-08-04
-incident and the 2026-08-05 autonomous run.
+incident and the 2026-08-05 operator-initiated agent run.
 
 **3. Expected behavior.** One answer, or two fields whose different meanings are
 documented.
