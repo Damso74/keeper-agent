@@ -2,28 +2,28 @@
 
 ## Two distinct executions — do not conflate them
 
-| | **Autonomous agent run** | Captured reliability incident |
+| | **Operator-initiated agent run** | Captured reliability incident |
 | --- | --- | --- |
-| What it proves | the agent decides and executes on its own | the provider's report diverges from the chain |
+| What it proves | after operator start, the agent independently decides, executes and verifies | the provider's report diverges from the chain |
 | Date | **2026-08-05** | 2026-08-04 |
 | Amount | **0.1 USDC** | 1 USDC |
 | KeeperHub execution id | **`no623hdfsrun2vzv3b25r`** | `1w6mru2gemgtq7wsruvaj` |
 | Transaction | [`0xe7e67b3a…`](https://sepolia.etherscan.io/tx/0xe7e67b3ab83e1af1f5d130d3c33dbe945cf015da8fb082020b24c253a8eb5062) | [`0x0801289e…`](https://sepolia.etherscan.io/tx/0x0801289edfdcfd919b64b1f7e267d935674d09fa09de7a9670b8aa169bcb605e) |
-| Triggered by | the agent's decision rule | a human operator |
+| Triggered by | human starts the run; the agent decides whether and how to act | a human operator |
 | Lives in | this repository | the [ProofGate](https://github.com/Damso74/proofgate) fixture |
 
-**The hackathon submission links the autonomous agent run.** The 2026-08-04 incident is
+**The hackathon submission links the operator-initiated agent run.** The 2026-08-04 incident is
 supporting evidence for the reliability argument, not the execution proof.
 
 ---
 
-## Autonomous agent run — 2026-08-05
+## Operator-initiated agent run — 2026-08-05
 
 **2026-08-05, Ethereum Sepolia.** The operator initiated the run; the agent independently
-observed, decided and executed without intervention. The decision rule, the amount and the
-choice to act were the agent's, applied to state it read itself — but the run itself was
-started by a human invoking `npm run agent -- --execute`, and saying otherwise would
-overstate it.
+observed, decided, executed and verified without further intervention. The decision rule,
+the amount and the choice to act were the agent's, applied to state it read itself — but
+the run itself was started by a human invoking `npm run agent -- --execute`, and saying
+otherwise would overstate it.
 
 |                        |                                                                                                                                                                            |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -49,7 +49,7 @@ idempotencyKey     : drip-w2952-100000
 from     0x8ff41a30…ed58   delegate EOA
 to       0x21e92b68…acc8   Zodiac Roles Modifier      selector 0xc6fe8747
   SafeModuleTransaction   module=Roles  to=USDC  operation=0
-  Transfer                from=0xf0Fe18E6…44d1 (the SAFE) → EOA   value=100000
+  Transfer                emitter=USDC  from=0xf0Fe18E6…44d1 (the SAFE) → EOA   value=100000
   ExecutionFromModuleSuccess  module=Roles
   ConsumeAllowance        consumed=100000  newBalance=3900000
 ```
@@ -87,7 +87,7 @@ chain; two provider-side warnings remain.
 | chain id, transaction hash, receipt status, block number, gas used | MATCH |
 | sender is the delegate EOA · top-level target is the Roles Modifier | MATCH |
 | token, recipient, amount | MATCH |
-| `Transfer` emitted **by the Safe** | MATCH |
+| `Transfer` emitted by the USDC contract, with `from = Safe` | MATCH |
 | `ExecutionFromModuleSuccess` | MATCH |
 | `ConsumeAllowance` equals the transferred amount | MATCH — `consumed=100000 remaining=3900000` |
 
