@@ -1,11 +1,16 @@
 # Treasury Drip Agent
 
-An autonomous treasury agent that **executes onchain through KeeperHub** — and refuses to
-report success unless the chain confirms it.
+An operator-triggered treasury agent that autonomously **observes, decides, executes
+onchain through KeeperHub, and verifies** within each run — refusing to report success
+unless the chain confirms it.
 
 Built for the [KeeperHub Agents Onchain hackathon](https://dorahacks.io/hackathon/agents-onchain/detail).
 Verification console: [ProofGate](https://proofgate.vercel.app) ·
 [source](https://github.com/Damso74/proofgate).
+The **0.1 USDC** run is the hackathon execution proof; ProofGate visualises a separate
+captured **1 USDC** reliability incident.
+Upstream impact: [verified-transaction guide merged into KeeperHub](https://docs.keeperhub.com/guides/first-verified-transaction) ·
+[MCP diagnostics PR under re-review](https://github.com/KeeperHub/keeperhub/pull/1976).
 
 ---
 
@@ -14,6 +19,9 @@ Verification console: [ProofGate](https://proofgate.vercel.app) ·
 ```
 observe (RPC, direct)  →  decide (pure rule)  →  execute (KeeperHub MCP)  →  reconcile (provider + chain)
 ```
+
+The operator starts a run. From that point, the agent independently observes, decides,
+executes at most once, and verifies the exact on-chain outcome.
 
 1. **Observe.** The agent reads chain state itself: the Safe's USDC balance, and the
    **remaining Zodiac Roles allowance measured by binary search over `eth_call`** on the
@@ -40,7 +48,8 @@ observe (RPC, direct)  →  decide (pure rule)  →  execute (KeeperHub MCP)  �
    **directly by RPC** and decodes them itself. `EXECUTED_VERIFIED` requires every one of
    these to hold on-chain: receipt status `success`, the expected chain id, the hash the
    provider announced, sender = delegate EOA, top-level target = Roles Modifier, an ERC-20
-   `Transfer` from the **Safe** to the expected recipient, the exact token and amount,
+   `Transfer` emitted by the **USDC token contract**, with `from = Safe` and the
+   expected recipient, token and amount,
    `ExecutionFromModuleSuccess`, and a `ConsumeAllowance` equal to the amount transferred.
 
    The provider's own `receipts[0].verified` is recorded as `providerVerified` for
@@ -131,7 +140,7 @@ so a client that reads only the status code loses it entirely.
 ## Setup
 
 The agent authenticates with a KeeperHub **organisation API key**, per the
-[MCP server docs](https://docs.keeperhub.com/ai-tools/mcp-server): browser OAuth is
+[MCP server docs](https://docs.keeperhub.com/agent/mcp-server): browser OAuth is
 explicitly unsuitable for headless systems.
 
 1. Create a key at app.keeperhub.com → Settings → API Keys → **Organisation** tab.
@@ -193,9 +202,10 @@ injected so the flow runs without a network:
 - deadline reached without proof produces the indeterminate outcome, never a retry;
 - a transaction that diverges on-chain, a missing proof, and an unreadable RPC each fail
   closed;
-- **event provenance**: `ExecutionFromModuleSuccess` from anything other than the Safe, or
-  `ConsumeAllowance` from anything other than the Roles Modifier, is rejected — a matching
-  log emitted by an unrelated contract in the same transaction cannot validate an execution;
+- **event provenance**: `Transfer` must be emitted by the USDC contract with
+  `from = Safe`; `ExecutionFromModuleSuccess` must come from the Safe; and
+  `ConsumeAllowance` must come from the Roles Modifier — a matching log emitted by an
+  unrelated contract in the same transaction cannot validate an execution;
 - `extractJson` against a body followed by trailing diagnostics, nested objects, braces
   inside strings and escaped quotes;
 - every `eth_call` of one observation carries the same pinned block tag, never `latest`.
@@ -220,7 +230,8 @@ injected so the flow runs without a network:
 | USDC                                                  | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` |
 
 The Roles Modifier is **not** the Safe: the module is the transaction entry point and
-enforces the policy; the Safe holds the funds and emits the `Transfer`.
+enforces the policy. The Safe holds the funds and appears as `from` in the transfer;
+the USDC token contract emits the `Transfer` log.
 
 ## Honest limits
 
