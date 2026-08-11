@@ -25,14 +25,14 @@ simply never reached the surface an agent builder reads.
 
 ## What we shipped
 
-Two small, independent, upstream pull requests, both targeting `staging`:
+One open code PR and one merged documentation contribution, both targeting `staging`:
 
 | PR | Title | Size | State (verified) |
 | --- | --- | --- | --- |
-| [#1976](https://github.com/KeeperHub/keeperhub/pull/1976) | `fix: surface actionable dry-run revert diagnostics over MCP` | +516 / -7, 3 files | open, ready for review, mergeable |
-| [#1977](https://github.com/KeeperHub/keeperhub/pull/1977) | `docs: add a zero-to-verified-transaction guide` | +248 / -1, 3 files | open, ready for review, mergeable |
+| [#1976](https://github.com/KeeperHub/keeperhub/pull/1976) | `fix: surface actionable dry-run revert diagnostics over MCP` | +580 / -7, 3 files | open, mergeable, re-review requested |
+| [#1977](https://github.com/KeeperHub/keeperhub/pull/1977) | `docs: add a zero-to-verified-transaction guide` | +248 / -1, 3 files | **merged** into `staging` |
 
-Neither is merged. Both target `staging`.
+PR #1977 is merged and its guide is [live in KeeperHub's official documentation](https://docs.keeperhub.com/guides/first-verified-transaction). PR #1976 is corrected, synced with `staging`, and awaiting maintainer re-review.
 
 Plus, in this repository: a friction report separating fact from hypothesis, and the
 reproduction commands.
@@ -44,7 +44,7 @@ The dry run of a transfer whose funds sit in the Safe, as seen by an agent over 
 **Before**
 
 ```text
-API call failed: 400 Bad Request - {"success":false,"status":"simulated","from":"0x8FF41A30…","to":"0x1c7D4B19…","value":"0","wouldRevert":true,"revertReason":"Error(ERC20: transfer amount exceeds balance)","error":"Error(ERC20: transfer amount exceeds balance)"}
+API call failed: 400 Bad Request - {"success":false,"status":"simulated","from":"0x8FF41A30…","to":"0x1c7D4B19…","value":"0","wouldRevert":true,"failureKind":"revert","revertReason":"Error(ERC20: transfer amount exceeds balance)","error":"Error(ERC20: transfer amount exceeds balance)"}
 ```
 
 One line. The JSON is present but only as a fragment of an error string, and nothing
@@ -74,11 +74,11 @@ working.
 
 ## Real hackathon context
 
-The submission proof is a real autonomous 0.1 USDC execution performed through
-KeeperHub. ProofGate uses a separate captured incident to demonstrate why provider
+The submission proof is a real operator-initiated 0.1 USDC agent execution performed
+through KeeperHub. ProofGate uses a separate captured incident to demonstrate why provider
 claims should be reconciled with the chain.
 
-**Autonomous agent run — 0.1 USDC — 2026-08-05, Ethereum Sepolia**
+**Operator-initiated agent run — 0.1 USDC — 2026-08-05, Ethereum Sepolia**
 
 | | |
 | --- | --- |
@@ -87,7 +87,8 @@ claims should be reconciled with the chain.
 | Block | 11424015 |
 | Agent outcome | `EXECUTED_VERIFIED` |
 
-The agent chose the moment and the amount itself, executed through KeeperHub, then
+The operator initiated the run. The agent then independently observed the state, applied
+its deterministic rule, chose the 0.1 USDC amount, executed once through KeeperHub, and
 verified the result by decoding the receipt rather than trusting the provider report.
 The execution path was `delegate EOA -> Zodiac Roles modifier -> Safe -> USDC ->
 recipient`, which is precisely the topology the dry run does not model.
@@ -101,59 +102,51 @@ an MCP tool handler as data. `call_workflow` already worked around this for HTTP
 PR #1976 extends that established pattern rather than inventing one:
 
 - `callExecuteApi` wraps `callApi` for `execute_transfer`, `execute_contract_call` and
-  `execute_check_and_execute`.
-- `buildSimulationRevertHint` returns `null` unless the body is an object with
-  `wouldRevert === true`, so ordinary validation 400s stay verbatim and are never
-  relabelled as reverts.
-- The original message is kept first; the stage, decoded reason, machine-readable `code`
-  and simulated sender are appended.
-- Revert strings are chosen by the contract under test, so they are sanitised with the
-  same control-character and length defences already used for x402 challenge fields.
+  `execute_check_and_execute`, while preserving the no-timeout option used for broadcasts.
+- `buildSimulationRevertHint` returns `null` unless the message starts with the exact HTTP
+  400 prefix and the parsed body has both `wouldRevert === true` and
+  `failureKind === "revert"`. Request-validation failures therefore stay verbatim.
+- The original first line remains verbatim for compatibility. Appended copies of the
+  stage, reason, machine-readable `code` and simulated accounts are sanitised and capped.
+- Revert strings are chosen by the contract under test, so control and invisible
+  characters are neutralised in the appended fields; the original upstream line is not
+  rewritten.
 
 ## Tests
 
-15 new deterministic unit tests, no network access:
+16 new deterministic unit tests, no network access:
 
 ```bash
 pnpm vitest run tests/unit/mcp-simulate-revert-diagnostics.test.ts
-# Test Files 1 passed (1) · Tests 15 passed (15)
+# Test Files 1 passed (1) · Tests 16 passed (16)
 ```
 
-They cover the augmented output, the preserved prefix, all three tools, and — just as
-importantly — the cases that must not change: validation 400, `wouldRevert: false`,
-non-JSON body, empty body, non-object JSON, HTTP 500, unchanged success. Two tests treat
-the revert string as hostile input (it cannot forge diagnostic lines; it is capped), and
-one asserts the auth header never appears in the message.
+They cover the augmented output, the preserved prefix, all three tools and the no-timeout
+passthrough. Negative cases include a route-level validation 400, a simulator validation
+failure (`wouldRevert: true`, `failureKind: "validation"`), `wouldRevert: false`, malformed
+or non-object bodies, and a non-400 response containing a misleading embedded 400 string.
+Hostile revert strings cannot forge appended diagnostic lines, and the appended
+`Reason:` copy is capped; the original compatibility line remains verbatim.
 
-Across every MCP and execute suite: **11 files, 159 tests, all passing.**
+Across the targeted MCP and execute suites: **11 files, 160 tests, all passing.**
 
-### Full CI-equivalent validation
+### Current validation — 2026-08-11
 
-Run on Linux with the toolchain the shared CI action pins — Node **22.22.0**, pnpm
-**9.15.9** — measuring pristine `staging` first so every number is a delta:
+PR #1976 is synced with `staging` at `32c8aa2`; its reviewed head is `f20a656`, and
+GitHub reports the branch as mergeable.
 
-| Command | `staging` (a0138f9) | #1976 | #1977 |
-| --- | --- | --- | --- |
-| `pnpm install --frozen-lockfile` | 0 | 0 | 0 |
-| `pnpm discover-plugins` | 0 | 0 | 0 |
-| `pnpm check` | 0 | 0 | 0 |
-| `pnpm check:api-docs` | 0 | 0 | 0 |
-| `pnpm type-check` | 0 | 0 | 0 |
-| `pnpm test:unit __tests__ keeperhub-metrics-collector` | 0 | 0 | 0 |
+- dedicated diagnostics suite: **16/16**;
+- targeted MCP and execution regressions: **160/160**;
+- GitHub merge-ref unit suite: **521 files / 20,819 tests passed**;
+- remote sandbox, lint, type-check, integration, migrations and docs: **pass**;
+- the [CI Pipeline run](https://github.com/KeeperHub/keeperhub/actions/runs/31446014503)
+  completed successfully.
 
-Unit totals: `staging` **504 files / 20613 tests**; #1976 **505 files / 20628 tests**
-(+1 file, +15 tests — exactly the new suite, no existing test altered); #1977 **504 files
-/ 20613 tests**, identical to baseline as a docs-only change should be.
-
-Both branches were also merged locally with the current `staging` tip (`0fd8e6e`) and
-re-validated: no conflicts, lint and type-check pass, targeted suites pass. `.node-version`
-declares Node 24, so #1976 was re-checked on **v24.19.0** as well — install,
-`discover-plugins`, lint, type-check and the 11 targeted suites (159 tests) all pass.
-
-Not run, and not claimed: `pnpm test:integration` needs the Postgres service container CI
-provides, and `pnpm build` is OOM-killed in our 7.4 GiB validation VM — it fails
-identically on pristine `staging`, so that is an environment limit, not a signal about
-either branch. `pnpm build` is not part of `pr-checks.yml`.
+One workflow remains red for a documented fork-infrastructure reason:
+[PR Checks](https://github.com/KeeperHub/keeperhub/actions/runs/31446014262) stops at
+`Configure AWS credentials` because `aws-region` is unavailable, before any build.
+This page does not present the aggregate CI as fully green, and no code or test failure is
+hidden.
 
 ## New-builder impact
 
@@ -170,6 +163,7 @@ We are **not** claiming a measured time saving. We did not measure one.
 
 - Code PR: https://github.com/KeeperHub/keeperhub/pull/1976
 - Docs PR: https://github.com/KeeperHub/keeperhub/pull/1977
+- Merged guide: https://docs.keeperhub.com/guides/first-verified-transaction
 - Friction report: `KEEPERHUB_ONBOARDING_FRICTION_REPORT.md`
 - Agent evidence: `EVIDENCE.md`
 - Transaction: https://sepolia.etherscan.io/tx/0xe7e67b3ab83e1af1f5d130d3c33dbe945cf015da8fb082020b24c253a8eb5062
@@ -195,12 +189,10 @@ pnpm vitest run tests/unit/mcp-simulate-revert-diagnostics.test.ts
 
 ## Limitations
 
-- **Both PRs are open and ready for review, and neither is merged.** We cannot claim
-  otherwise, and merging is the maintainers' decision.
-- **We cannot claim green CI.** GitHub created the workflow runs but no jobs: every run
-  sits at `conclusion: action_required`, the standard gate for a fork contribution, so CI
-  awaits a maintainer's approval. Everything reported above is our own local
-  CI-equivalent run, not GitHub's.
+- **PR #1977 is merged. PR #1976 is still open** and awaiting maintainer re-review; it is
+  not described as approved or merged.
+- **The aggregate CI is not labelled green.** All code-related validation passed, but the
+  fork-only AWS setup job fails before build because `aws-region` is unavailable.
 - The fix makes the simulator's Safe-routing limitation *visible*; it does not remove it.
   That limitation is documented upstream and changing it is a larger decision than this
   contribution should make.
@@ -210,17 +202,17 @@ pnpm vitest run tests/unit/mcp-simulate-revert-diagnostics.test.ts
   be our own configuration error.
 - No transaction was broadcast while preparing this contribution.
 
-## Relationship to Keeper Agent and ProofGate
+## Relationship to Treasury Drip Agent and ProofGate
 
 Three artifacts, deliberately kept distinct:
 
 | | Amount | Broadcast | Role here |
 | --- | --- | --- | --- |
-| Autonomous agent run, 2026-08-05 | 0.1 USDC | yes | **the execution proof for this submission** |
+| Operator-initiated agent run, 2026-08-05 | 0.1 USDC | yes | **the execution proof for this submission** |
 | Captured reliability incident, 2026-08-04 | 1 USDC | yes | evidence that a provider report can diverge from the chain |
 | Counterfactual policy replay | 5 USDC | **no broadcast** | ProofGate scenario B, a what-if against the remaining allowance |
 
-**Keeper Agent** is the hackathon project: an agent that executes through KeeperHub and
+**Treasury Drip Agent** is the hackathon project: an agent that executes through KeeperHub and
 refuses to report success unless the chain confirms it.
 
 **ProofGate** is a separate demonstrator of reconciliation and deterministic replay. It
