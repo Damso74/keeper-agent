@@ -2,16 +2,20 @@
 
 Base: `staging` · Branch: `fix/mcp-simulate-revert-diagnostics`
 
+**Status — 2026-08-11:** open, mergeable, synced with `staging` at `32c8aa2`, and
+awaiting maintainer re-review. Current head: `f20a656`.
+
 ---
 
 ## Summary
 
-A dry run that would revert answers HTTP 400 with `wouldRevert: true` and a decoded
-reason. `docs/api/direct-execution.md` tells REST callers to read `wouldRevert` before
-classifying that 400, because the status describes the transaction rather than the
-request.
+A true simulation revert answers HTTP 400 with `wouldRevert: true`,
+`failureKind: "revert"` and a decoded reason. Request-validation failures may also carry
+`wouldRevert: true`, so both fields are required before the MCP client may label the
+result as an on-chain revert.
 
-An MCP caller cannot follow that advice. `callApi` throws on any non-2xx, so the body
+An MCP caller could not consume that structured result. `callApi` throws on any non-2xx,
+so the body
 never reaches the tool handler as data, and the diagnostic survives only as a fragment of
 `API call failed: 400 Bad Request - {...}`. The agent-native surface loses exactly the
 information the dry run exists to produce.
@@ -30,13 +34,13 @@ needed to resolve it was already in the response and simply never surfaced.
 ## Before
 
 ```text
-API call failed: 400 Bad Request - {"success":false,"status":"simulated","from":"0x8FF41A30af4458E3C14C8843BDDcc37B7992ED58","to":"0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238","value":"0","wouldRevert":true,"revertReason":"Error(ERC20: transfer amount exceeds balance)","error":"Error(ERC20: transfer amount exceeds balance)"}
+API call failed: 400 Bad Request - {"success":false,"status":"simulated","from":"0x8FF41A30af4458E3C14C8843BDDcc37B7992ED58","to":"0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238","value":"0","wouldRevert":true,"failureKind":"revert","revertReason":"Error(ERC20: transfer amount exceeds balance)","error":"Error(ERC20: transfer amount exceeds balance)"}
 ```
 
 ## After
 
 ```text
-API call failed: 400 Bad Request - {"success":false,"status":"simulated","from":"0x8FF41A30af4458E3C14C8843BDDcc37B7992ED58","to":"0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238","value":"0","wouldRevert":true,"revertReason":"Error(ERC20: transfer amount exceeds balance)","error":"Error(ERC20: transfer amount exceeds balance)"}
+API call failed: 400 Bad Request - {"success":false,"status":"simulated","from":"0x8FF41A30af4458E3C14C8843BDDcc37B7992ED58","to":"0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238","value":"0","wouldRevert":true,"failureKind":"revert","revertReason":"Error(ERC20: transfer amount exceeds balance)","error":"Error(ERC20: transfer amount exceeds balance)"}
 
 Simulation reverted. Nothing was signed or broadcast.
 Stage: simulation — this 400 describes the transaction, not your request.
@@ -53,95 +57,59 @@ Next step:
 
 ## Implementation
 
-- `callExecuteApi` wraps `callApi` for the three direct-execution tools. Everything
-  except a dry-run revert is rethrown untouched.
-- `buildSimulationRevertHint` parses the body out of the error message using the same
-  prefix-anchored `" - "` search as `buildPaymentRequiredHint`, and returns `null` unless
-  the body is an object with `wouldRevert === true`.
+- `callExecuteApi` wraps `callApi` for the three direct-execution tools and forwards the
+  seventh `CallApiOptions` argument, preserving `NO_MCP_FETCH_TIMEOUT` on broadcasts.
+- `buildSimulationRevertHint` activates only when the message starts with the exact HTTP
+  400 prefix and the parsed body has both `wouldRevert === true` and
+  `failureKind === "revert"`.
 - The next step names the Safe-routing caveat already documented under
   [Known limitation](https://docs.keeperhub.com/api/direct-execution#known-limitation),
   because a Safe-routed org's simulated sender is not the account the broadcast spends
   from.
-- `sanitiseAcceptField` now delegates to a shared `sanitiseUpstreamField` rather than
-  duplicating the control-character and length defences. A revert string is chosen by the
-  contract under test, so it is untrusted input and gets the same treatment as an x402
-  challenge field.
+- Revert fields are untrusted input: control characters are neutralised and appended
+  field copies are capped. The original upstream first line remains verbatim for
+  compatibility.
 
 ## Compatibility
 
 - The original message is kept as the first line, so callers that pattern-match
   `API call failed: 400` are unaffected. A test pins this.
-- Only `wouldRevert: true` bodies are augmented. Ordinary validation 400s (bad address,
-  non-boolean `simulate`) are rethrown verbatim and are never relabelled as reverts.
+- Only exact HTTP 400 bodies with `wouldRevert: true` and `failureKind: "revert"` are
+  augmented. Route-level and simulator validation failures are rethrown verbatim and are
+  never relabelled as reverts.
 - Successful responses are untouched — no change to the success envelope.
 - Non-400 statuses are untouched.
 - No new dependency, no public type change, no change to the REST layer or the simulator.
 
 ## Tests
 
-New file: `tests/unit/mcp-simulate-revert-diagnostics.test.ts` (15 tests). Covers the
-augmented fields, the preserved prefix, all three tools, and the cases that must **not**
-change: validation 400, `wouldRevert: false`, non-JSON body, empty body, non-object JSON
-(`null`, `[]`, string, number), HTTP 500, and an unchanged success. Two untrusted-input
-tests assert a revert string cannot forge diagnostic lines and that oversized strings are
-capped. One test asserts the auth header never appears in the message. No network calls.
+New file: `tests/unit/mcp-simulate-revert-diagnostics.test.ts` (16 tests). It covers the
+augmented fields, preserved prefix, all three tools, the no-timeout passthrough, a
+simulator validation failure with `wouldRevert: true`, a misleading embedded 400 string
+inside a 500 response, unchanged successes, malformed bodies, and hostile or oversized
+revert strings. The appended `Reason:` copy is capped; the original first line remains
+verbatim. No network calls.
 
 ```bash
 pnpm vitest run tests/unit/mcp-simulate-revert-diagnostics.test.ts
-# Test Files 1 passed (1) · Tests 15 passed (15) · 5.38s
-
-pnpm vitest run tests/unit/mcp-meta-tools.test.ts
-# Test Files 1 passed (1) · Tests 46 passed (46) · 4.12s
+# Test Files 1 passed (1) · Tests 16 passed (16)
 ```
 
-### Full CI-equivalent run
+### Current validation — 2026-08-11
 
-Validated on Linux with the toolchain the shared CI action pins
-(`actions/setup-node@v6` node-version `22`, `pnpm/action-setup@v4` version `9`):
-**Node 22.22.0, pnpm 9.15.9**. Pristine `staging` was measured first so every number
-below is a delta against a known baseline rather than an isolated claim.
+The branch is synced with `staging` at `32c8aa2`; its current head is `f20a656`, and
+GitHub reports it as mergeable.
 
-| Command | `staging` (a0138f9) | this branch |
-| --- | --- | --- |
-| `pnpm install --frozen-lockfile` | 0 | 0 |
-| `pnpm discover-plugins` | 0 | 0 |
-| `pnpm check` | 0 | 0 |
-| `pnpm check:api-docs` | 0 | 0 |
-| `pnpm type-check` | 0 | 0 |
-| `pnpm test:unit __tests__ keeperhub-metrics-collector` | 0 | 0 |
+- dedicated diagnostics suite: **16/16**;
+- targeted MCP and execution regressions: **160/160**;
+- GitHub merge-ref unit suite: **521 files / 20,819 tests passed**;
+- remote sandbox, lint, type-check, integration, migrations and docs: **pass**;
+- [CI Pipeline](https://github.com/KeeperHub/keeperhub/actions/runs/31446014503):
+  **success**.
 
-Unit totals: `staging` **504 files / 20613 tests passed**; this branch **505 files /
-20628 tests passed**. Exactly +1 file and +15 tests, which is this PR's new suite, with
-no change to any existing test.
-
-Targeted MCP + execute suites:
-
-```bash
-pnpm vitest run tests/unit/mcp-simulate-revert-diagnostics.test.ts \
-  tests/unit/mcp-meta-tools.test.ts tests/unit/mcp-execute-simulation.test.ts \
-  tests/unit/mcp-simulate-scope.test.ts tests/unit/execute-simulate-scope.test.ts \
-  tests/unit/mcp-execute-arg-coercion.test.ts tests/unit/mcp-execute-field-naming.test.ts \
-  tests/unit/mcp-catalog.test.ts tests/unit/mcp-calldata.test.ts \
-  tests/unit/mcp-curator-tools.test.ts tests/unit/execute-simulate-flag.test.ts
-# Test Files 11 passed (11) · Tests 159 passed (159)
-```
-
-### Checked against the current `staging` tip
-
-Because `845adf4` also touched `lib/mcp/tools.ts`, this branch was merged locally with
-`staging` at `0fd8e6e` and re-validated. `lib/mcp/tools.ts` auto-merges with no conflict,
-and on the merged tree `pnpm check`, `pnpm type-check` and the 11 targeted suites
-(159 tests) all pass. The two changes do not overlap: `845adf4` edits the workflow-guidance
-string and the `get_direct_execution_status` description, this PR adds a helper and swaps
-the three `callApi` call sites.
-
-### Not run
-
-- `pnpm test:integration` needs the Postgres service container CI provides.
-- `pnpm build` is OOM-killed in our 7.4 GiB validation VM
-  (`Out of memory: Killed process ... anon-rss:5632340kB`, exit 137). It fails identically
-  on pristine `staging` with no changes applied, so this is a limit of our environment and
-  not attributable to this branch. `pnpm build` is not part of `pr-checks.yml`.
+[PR Checks](https://github.com/KeeperHub/keeperhub/actions/runs/31446014262) is marked
+failed only because the fork job cannot configure AWS without `aws-region`; it stops
+before build. No code or test job fails.
 
 ## Real-world context
 
@@ -168,8 +136,11 @@ Not addressed here, deliberately:
 - [x] Targets `staging`
 - [x] Conventional-commit title
 - [x] `pnpm check` and `pnpm type-check` pass (Node 22 + pnpm 9)
-- [x] `pnpm test:unit` passes: 505 files / 20628 tests, +15 over baseline, 0 failures
-- [x] New tests, deterministic, no network
+- [x] Dedicated suite: 16/16
+- [x] Targeted MCP and execution regressions: 160/160
+- [x] GitHub merge-ref unit suite: 521 files / 20,819 tests passed
+- [x] Remote sandbox, lint, type-check, integration, migrations and docs pass
+- [x] New tests are deterministic and use no network
 - [x] No secrets, no `.env`, no generated artifacts
 - [x] Backwards compatible
-- [x] Re-validated after merging the current `staging` tip
+- [x] Synced with current `staging`; branch is mergeable
