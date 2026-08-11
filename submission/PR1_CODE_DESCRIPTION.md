@@ -113,7 +113,7 @@ before build. No code or test job fails.
 
 ## Real-world context
 
-Found while building an autonomous agent against the live KeeperHub MCP server on
+Found while building an operator-triggered onchain agent against the live KeeperHub MCP server on
 Ethereum Sepolia. The execution path was
 `delegate EOA -> Zodiac Roles modifier -> Safe -> USDC -> recipient`. A 2 USDC dry run
 predicted a revert while the real path accepted it, because the EOA's own balance is

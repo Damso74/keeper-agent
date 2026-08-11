@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Treasury Drip Agent — an autonomous agent that executes onchain through KeeperHub and refuses to report success unless the chain confirms it.",
+  "description": "Treasury Drip Agent — an operator-triggered agent that executes onchain through KeeperHub and refuses to report success unless the chain confirms it.",
   "scripts": {
     "agent": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",

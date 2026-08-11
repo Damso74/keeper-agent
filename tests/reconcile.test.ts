@@ -1,24 +1,31 @@
 import { describe, expect, it } from "vitest";
 
 import { normalizeAudit } from "../src/audit";
-import { ADDRESSES, CHAIN_ID, RECIPIENT } from "../src/config";
-import { reconcile, type ChainEvidence, type Expectations } from "../src/reconcile";
+import { ADDRESSES, CHAIN_ID, DRIP_AMOUNT_RAW, RECIPIENT } from "../src/config";
+import {
+  reconcile,
+  type ChainEvidence,
+  type ReconciliationExpectations,
+} from "../src/reconcile";
 
 /**
- * Fixtures dérivées de l'exécution autonome réelle du 2026-08-05
+ * Fixtures dérivées de l'exécution réelle initiée par l'opérateur le 2026-08-05
  * (executionId no623hdfsrun2vzv3b25r).
  */
 
 const TX = "0xe7e67b3ab83e1af1f5d130d3c33dbe945cf015da8fb082020b24c253a8eb5062";
 
-const EXPECTED: Expectations = {
+const EXPECTED: ReconciliationExpectations = {
   safe: ADDRESSES.safe,
   rolesModifier: ADDRESSES.rolesModifier,
   delegateEoa: ADDRESSES.delegateEoa,
   token: ADDRESSES.token,
   recipient: RECIPIENT,
   chainId: CHAIN_ID,
+  amountRaw: DRIP_AMOUNT_RAW,
 };
+
+const IMPOSTOR = "0x00000000000000000000000000000000deadbeef";
 
 function directStatus(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -78,8 +85,38 @@ function chainEvidence(overrides: Partial<ChainEvidence> = {}): ChainEvidence {
     moduleExecutionSuccess: true,
     allowanceConsumedRaw: "100000",
     allowanceRemainingRaw: "3900000",
+    moduleSuccessEmitter: ADDRESSES.safe,
+    allowanceEmitter: ADDRESSES.rolesModifier,
     ...overrides,
   };
+}
+
+function directStatusWithCall(overrides: {
+  contractAddress?: string;
+  recipient?: string;
+  valueRaw?: string;
+}): Record<string, unknown> {
+  const status = directStatus();
+  const result = status.result as Record<string, unknown>;
+  const executedCall = result.executedCall as Record<string, unknown>;
+  const args = executedCall.args as Record<string, unknown>;
+
+  if (overrides.contractAddress !== undefined) {
+    executedCall.contractAddress = overrides.contractAddress;
+  }
+  if (overrides.recipient !== undefined) args.to = overrides.recipient;
+  if (overrides.valueRaw !== undefined) args.value = overrides.valueRaw;
+
+  return status;
+}
+
+function directStatusWithChainId(chainId: number): Record<string, unknown> {
+  const status = directStatus();
+  const receipts = status.receipts as Array<Record<string, unknown>>;
+  const result = status.result as Record<string, unknown>;
+  receipts[0].chainId = chainId;
+  result.chainId = chainId;
+  return status;
 }
 
 const run = (status: unknown, chain: ChainEvidence, simulation?: unknown) =>
@@ -100,6 +137,76 @@ describe("1 — correspondance complète", () => {
     const result = run(withAllowance, chainEvidence());
     expect(result.verdict).toBe("MATCH");
     expect(result.warnings).toEqual([]);
+  });
+});
+
+describe("attentes Treasury Drip — la concordance fournisseur/chaîne ne suffit pas", () => {
+  it("refuse un réseau inattendu même si le fournisseur et le RPC concordent", () => {
+    const result = run(directStatusWithChainId(1), chainEvidence({ chainId: 1 }));
+
+    expect(result.checks.find((check) => check.id === "CHAIN_ID")?.status).toBe("MATCH");
+    expect(result.mismatches).toContain("CHAIN_ID_MATCHES_EXPECTED");
+    expect(result.verdict).toBe("MISMATCH");
+  });
+
+  it("refuse un jeton inattendu même si le fournisseur et la chaîne concordent", () => {
+    const result = run(
+      directStatusWithCall({ contractAddress: IMPOSTOR }),
+      chainEvidence({ transferToken: IMPOSTOR }),
+    );
+
+    expect(result.checks.find((check) => check.id === "TOKEN")?.status).toBe("MATCH");
+    expect(result.mismatches).toContain("TOKEN_MATCHES_EXPECTED");
+    expect(result.verdict).toBe("MISMATCH");
+  });
+
+  it("refuse un destinataire inattendu même si le fournisseur et la chaîne concordent", () => {
+    const result = run(
+      directStatusWithCall({ recipient: IMPOSTOR }),
+      chainEvidence({ transferTo: IMPOSTOR }),
+    );
+
+    expect(result.checks.find((check) => check.id === "RECIPIENT")?.status).toBe("MATCH");
+    expect(result.mismatches).toContain("RECIPIENT_MATCHES_EXPECTED");
+    expect(result.verdict).toBe("MISMATCH");
+  });
+
+  it("refuse un montant inattendu même si le fournisseur, le transfert et la policy concordent", () => {
+    const result = run(
+      directStatusWithCall({ valueRaw: "200000" }),
+      chainEvidence({ transferValueRaw: "200000", allowanceConsumedRaw: "200000" }),
+    );
+
+    expect(result.checks.find((check) => check.id === "AMOUNT")?.status).toBe("MATCH");
+    expect(result.checks.find((check) => check.id === "POLICY_ALLOWANCE_CONSUMED")?.status).toBe(
+      "MATCH",
+    );
+    expect(result.mismatches).toContain("AMOUNT_MATCHES_EXPECTED");
+    expect(result.verdict).toBe("MISMATCH");
+  });
+});
+
+describe("provenance des événements", () => {
+  it("refuse ExecutionFromModuleSuccess émis par un autre contrat", () => {
+    const result = run(directStatus(), chainEvidence({ moduleSuccessEmitter: IMPOSTOR }));
+    expect(result.mismatches).toContain("MODULE_SUCCESS_EMITTED_BY_SAFE");
+    expect(result.verdict).toBe("MISMATCH");
+  });
+
+  it("refuse ConsumeAllowance émis par un autre contrat", () => {
+    const result = run(directStatus(), chainEvidence({ allowanceEmitter: IMPOSTOR }));
+    expect(result.mismatches).toContain("ALLOWANCE_EMITTED_BY_ROLES_MODIFIER");
+    expect(result.verdict).toBe("MISMATCH");
+  });
+
+  it("classe les émetteurs absents comme preuves manquantes", () => {
+    const result = run(
+      directStatus(),
+      chainEvidence({ moduleSuccessEmitter: null, allowanceEmitter: null }),
+    );
+    expect(result.missing).toContain("MODULE_SUCCESS_EMITTED_BY_SAFE");
+    expect(result.missing).toContain("ALLOWANCE_EMITTED_BY_ROLES_MODIFIER");
+    expect(result.verdict).toBe("EVIDENCE_MISSING");
   });
 });
 
@@ -223,6 +330,8 @@ describe("invariants", () => {
       chainEvidence({ transferFrom: null }),
       chainEvidence({ allowanceConsumedRaw: null }),
       chainEvidence({ moduleExecutionSuccess: false }),
+      chainEvidence({ moduleSuccessEmitter: null }),
+      chainEvidence({ allowanceEmitter: null }),
       chainEvidence({ chainId: null }),
     ]) {
       expect(run(directStatus(), chain).verdict).not.toBe("MATCH");

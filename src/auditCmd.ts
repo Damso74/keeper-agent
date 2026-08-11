@@ -2,7 +2,7 @@
 import { fetchAnalyticsAudit } from "./analytics";
 import { normalizeAudit } from "./audit";
 import { fetchChainEvidence } from "./chain-evidence";
-import { ADDRESSES, CHAIN_ID, RECIPIENT } from "./config";
+import { ADDRESSES, CHAIN_ID, DRIP_AMOUNT_RAW, RECIPIENT } from "./config";
 import { KeeperHubClient } from "./keeperhub";
 import { reconcile } from "./reconcile";
 
@@ -79,6 +79,7 @@ async function main(): Promise<void> {
     token: ADDRESSES.token,
     recipient: RECIPIENT,
     chainId: CHAIN_ID,
+    amountRaw: DRIP_AMOUNT_RAW,
   });
 
   out({ executionId, keeperHubAudit: audit, analytics, chainEvidence: chain, reconciliation });

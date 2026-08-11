@@ -34,15 +34,16 @@ executes at most once, and verifies the exact on-chain outcome.
    is auditable, and a third party can replay the decision and get the same answer. Every
    abstention carries a stable code and a human-readable reason.
 
-3. **Execute.** One call to `execute_transfer` over the KeeperHub MCP server, with an
-   idempotency key derived from the payout window. **No automatic retry** — the key
-   protects against double effect, but re-firing after a timeout stays a human decision.
+3. **Execute.** One read-only `execute_transfer` preflight with `simulate: true`, followed by
+   one non-simulated `execute_transfer` broadcast with an idempotency key derived from the
+   payout window. **No automatic retry** — the key protects against double effect, but
+   re-firing after a timeout stays a human decision.
 
 4. **Wait.** `get_direct_execution_status` is polled until a terminal status or a
    deadline. `queued`, `pending`, `running` and `unconfirmed` are all treated as
    non-terminal — `unconfirmed` in particular means the transaction was broadcast but its
    receipt is not yet readable, which is not a failure. The wait never re-sends
-   `execute_transfer`: the report carries `executeCalls`, and it is always `1`.
+   non-simulated `execute_transfer`: the report carries `executeCalls`, and it is always `1`.
 
 5. **Verify independently.** The agent then fetches the transaction and its receipt
    **directly by RPC** and decodes them itself. `EXECUTED_VERIFIED` requires every one of
@@ -182,7 +183,7 @@ be read as success:
 ## Tests
 
 ```bash
-npm test          # 84 tests, no network
+npm test          # 91 tests, no network
 npm run typecheck
 ```
 
@@ -215,7 +216,7 @@ injected so the flow runs without a network:
 - **0.1 USDC per drip.** The weekly allowance is small and filming retakes draw from the
   same envelope.
 - A **safety margin** keeps the allowance from ever being drained to zero.
-- **One `execute_transfer` call, ever.** No retry loop.
+- **One read-only preflight, then one non-simulated `execute_transfer` broadcast.** No retry loop.
 - The idempotency key is derived from the payout window: two runs in the same window with
   the same arguments cannot produce two transfers.
 - The agent aborts if the RPC is not on the expected chain.
