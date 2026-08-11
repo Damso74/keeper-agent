@@ -2,7 +2,11 @@
 
 Base: `staging` · Branch: `docs/first-verified-transaction`
 
-Independent of PR 1 — no shared files, either can merge first.
+**Status — 2026-08-11:** merged as
+[KeeperHub PR #1977](https://github.com/KeeperHub/keeperhub/pull/1977); the guide is
+[live in the official documentation](https://docs.keeperhub.com/guides/first-verified-transaction).
+
+Independent of PR 1 — no shared files were required for the merge.
 
 ---
 
@@ -16,7 +20,7 @@ in `docs/guides/_meta.ts` and linked from `docs/guides/index.md`.
 
 The quickstart and the Direct Execution reference already take a builder to a request
 that is accepted, and the reference already documents receipts, idempotency, the
-`wouldRevert` semantics of a dry-run 400, and the simulator's Safe caveat.
+structured dry-run failure semantics, including the simulator's Safe caveat.
 
 What is missing is a single path that ends at "this transaction landed, and I checked" —
 and, in particular, an explanation of which account plays which role once Safe signer
@@ -30,8 +34,9 @@ first-time integrator meets its consequences before meeting the caveat.
   `/wallet-management/safe`.
 - **Preflight checklist** — chain, token, units, and the balance of the account that
   actually pays.
-- **Reading a dry-run 400** — that the status describes the transaction rather than the
-  request, and that a successful dry run is not a guarantee of execution.
+- **Reading a dry-run 400** — only `failureKind: "revert"` together with
+  `wouldRevert: true` describes a simulated transaction revert; validation failures still
+  describe the request, and a successful dry run is not a guarantee of execution.
 - **Execution** — re-send the simulated body with `simulate` removed and an
   `Idempotency-Key` added.
 - **Receipt verification** — `verified`, `receiptStatus` (including
@@ -92,7 +97,7 @@ an environment limit rather than a signal about this branch; it is also not part
 
 - Every internal link resolves against `staging`: `/api/api-keys`,
   `/api/direct-execution#known-limitation`, `/api/direct-execution#choosing-a-stable-key`,
-  `/ai-tools/mcp-server`, `/wallet-management/safe`, `/wallet-management/turnkey`. The two
+  `/agent/mcp-server`, `/wallet-management/safe`, `/wallet-management/turnkey`. The two
   anchors were checked against the actual headings in `docs/api/direct-execution.md`.
 - Field names and `receiptStatus` values are taken from `docs/api/direct-execution.md` and
   `app/api/execute/[executionId]/status/route.ts`, not invented.
