@@ -54,7 +54,7 @@ to       0x21e92b68…acc8   Zodiac Roles Modifier      selector 0xc6fe8747
   ConsumeAllowance        consumed=100000  newBalance=3900000
 ```
 
-The allowance moved from 4 USDC to 3.9 USDC — exactly what the agent decided.
+The decoded `ConsumeAllowance` event reports 0.1 USDC consumed and 3.9 USDC remaining.
 
 ## KeeperHub audit trail, reconciled
 

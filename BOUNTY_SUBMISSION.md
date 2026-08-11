@@ -19,7 +19,7 @@ still not know two things that decide whether the integration works:
    you to fund the wrong one.
 2. **Whether the transaction landed.** An accepted request is not a receipt.
 
-Both cost us real time while shipping an autonomous agent against the live MCP server.
+Both cost us real time while shipping an operator-triggered onchain agent against the live MCP server.
 The information needed to resolve the first one was already in the API response — it
 simply never reached the surface an agent builder reads.
 
@@ -88,8 +88,9 @@ claims should be reconciled with the chain.
 | Agent outcome | `EXECUTED_VERIFIED` |
 
 The operator initiated the run. The agent then independently observed the state, applied
-its deterministic rule, chose the 0.1 USDC amount, executed once through KeeperHub, and
-verified the result by decoding the receipt rather than trusting the provider report.
+its deterministic rule, chose the 0.1 USDC amount, ran one read-only preflight, broadcast
+once through KeeperHub, and verified the result by decoding the receipt rather than
+trusting the provider report.
 The execution path was `delegate EOA -> Zodiac Roles modifier -> Safe -> USDC ->
 recipient`, which is precisely the topology the dry run does not model.
 

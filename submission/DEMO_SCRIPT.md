@@ -13,14 +13,14 @@ recording, no face required. Keep every API key, `.env` file and `kh_` string of
 Operator starts run
 → agent observes
 → deterministic decision
-→ one KeeperHub execution
+→ one read-only preflight + one KeeperHub broadcast
 → independent RPC verification
 ```
 
 **Voiceover.**
 > Provider success is not proof. Treasury Drip Agent executes from a policy-scoped Safe
-> through KeeperHub, exactly once, and reports success only after the chain confirms the
-> exact outcome.
+> through one read-only KeeperHub preflight and one non-simulated broadcast, and reports
+> success only after the chain confirms the exact outcome.
 
 ## 0:15–0:45 — The agent
 
@@ -31,7 +31,8 @@ Operator starts run
 **Voiceover.**
 > The operator initiated this run. From there, the agent independently read the Safe
 > balance and remaining Zodiac allowance, applied a deterministic rule, chose a 0.1 USDC
-> drip, and made one `execute_transfer` call through KeeperHub. There is no automatic
+> drip, ran one read-only `simulate: true` preflight, and made one non-simulated
+> `execute_transfer` broadcast through KeeperHub. There is no automatic
 > retry after an ambiguous broadcast.
 
 ## 0:45–1:15 — The chain is authoritative
@@ -85,7 +86,7 @@ transaction and merged guide.
 - Say: **"The operator initiated the run; the agent independently observed, decided,
   executed and verified."**
 - Do not say the agent scheduled or initiated itself.
-- Keep the autonomous **0.1 USDC** run distinct from ProofGate's captured **1 USDC**
+- Keep the operator-triggered **0.1 USDC** run distinct from ProofGate's captured **1 USDC**
   incident and the unbroadcast **5 USDC** counterfactual.
 - The USDC contract emits `Transfer`; the Safe appears in its `from` field.
 - Present PR #1977 as merged and live. Present PR #1976 as open, mergeable and under

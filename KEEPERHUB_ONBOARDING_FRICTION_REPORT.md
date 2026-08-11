@@ -25,7 +25,7 @@ Upstream source was read at `KeeperHub/keeperhub@a0138f9` (branch `staging`).
 
 These are distinct and are never merged into a single claim:
 
-| | Autonomous agent run | Captured reliability incident | Counterfactual policy replay |
+| | Operator-triggered agent run | Captured reliability incident | Counterfactual policy replay |
 | --- | --- | --- | --- |
 | Amount | 0.1 USDC | 1 USDC | 5 USDC |
 | Date | 2026-08-05 | 2026-08-04 | n/a |

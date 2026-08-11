@@ -46,6 +46,11 @@ export type Expectations = {
   chainId: number;
 };
 
+/** Attentes propres au versement réconcilié, montant brut inclus. */
+export type ReconciliationExpectations = Expectations & {
+  amountRaw: bigint;
+};
+
 export type CheckStatus = "MATCH" | "MISMATCH" | "MISSING" | "WARNING" | "NOT_APPLICABLE";
 
 export type ReconciliationCheck = {
@@ -75,6 +80,14 @@ export type Reconciliation = {
 const same = (a: string | null, b: string | null): boolean =>
   a !== null && b !== null && a.toLowerCase() === b.toLowerCase();
 
+const sameInteger = (a: string, b: string): boolean => {
+  try {
+    return BigInt(a) === BigInt(b);
+  } catch {
+    return false;
+  }
+};
+
 function compare(
   id: string,
   kind: ReconciliationCheck["kind"],
@@ -99,7 +112,7 @@ function compare(
 export function reconcile(
   audit: KeeperHubAudit,
   chain: ChainEvidence,
-  expected: Expectations,
+  expected: ReconciliationExpectations,
 ): Reconciliation {
   const checks: ReconciliationCheck[] = [];
 
@@ -111,6 +124,20 @@ export function reconcile(
       chain.chainId != null ? String(chain.chainId) : null,
     ),
   );
+
+  checks.push({
+    id: "CHAIN_ID_MATCHES_EXPECTED",
+    kind: "authoritative",
+    status:
+      chain.chainId === null
+        ? "MISSING"
+        : chain.chainId === expected.chainId
+          ? "MATCH"
+          : "MISMATCH",
+    audit: null,
+    chain: chain.chainId === null ? null : String(chain.chainId),
+    note: `Chaîne attendue : ${expected.chainId}.`,
+  });
 
   checks.push(
     compare("TRANSACTION_HASH", "authoritative", audit.transactionHash, chain.transactionHash),
@@ -182,6 +209,23 @@ export function reconcile(
     ),
   );
 
+  // La concordance fournisseur/chaîne ne suffit pas : les deux pourraient
+  // décrire le même jeton inattendu. La chaîne doit aussi correspondre à la
+  // configuration Treasury Drip.
+  checks.push({
+    id: "TOKEN_MATCHES_EXPECTED",
+    kind: "authoritative",
+    status:
+      chain.transferToken === null
+        ? "MISSING"
+        : same(chain.transferToken, expected.token)
+          ? "MATCH"
+          : "MISMATCH",
+    audit: null,
+    chain: chain.transferToken,
+    note: `Jeton attendu : ${expected.token}.`,
+  });
+
   checks.push({
     id: "TRANSFER_FROM_SAFE",
     kind: "authoritative",
@@ -200,15 +244,43 @@ export function reconcile(
     compare("RECIPIENT", "authoritative", audit.executedCall?.recipient ?? null, chain.transferTo),
   );
 
+  checks.push({
+    id: "RECIPIENT_MATCHES_EXPECTED",
+    kind: "authoritative",
+    status:
+      chain.transferTo === null
+        ? "MISSING"
+        : same(chain.transferTo, expected.recipient)
+          ? "MATCH"
+          : "MISMATCH",
+    audit: null,
+    chain: chain.transferTo,
+    note: `Destinataire attendu : ${expected.recipient}.`,
+  });
+
   checks.push(
     compare(
       "AMOUNT",
       "authoritative",
       audit.executedCall?.valueRaw ?? null,
       chain.transferValueRaw,
-      (a, b) => BigInt(a) === BigInt(b),
+      sameInteger,
     ),
   );
+
+  checks.push({
+    id: "AMOUNT_MATCHES_EXPECTED",
+    kind: "authoritative",
+    status:
+      chain.transferValueRaw === null
+        ? "MISSING"
+        : sameInteger(chain.transferValueRaw, expected.amountRaw.toString())
+          ? "MATCH"
+          : "MISMATCH",
+    audit: null,
+    chain: chain.transferValueRaw,
+    note: `Montant brut attendu : ${expected.amountRaw.toString()}.`,
+  });
 
   checks.push({
     id: "MODULE_EXECUTION_SUCCESS",
@@ -217,6 +289,20 @@ export function reconcile(
     audit: null,
     chain: chain.moduleExecutionSuccess ? "ExecutionFromModuleSuccess" : null,
     note: "Événement émis par le Safe.",
+  });
+
+  checks.push({
+    id: "MODULE_SUCCESS_EMITTED_BY_SAFE",
+    kind: "authoritative",
+    status:
+      (chain.moduleSuccessEmitter ?? null) === null
+        ? "MISSING"
+        : same(chain.moduleSuccessEmitter ?? null, expected.safe)
+          ? "MATCH"
+          : "MISMATCH",
+    audit: null,
+    chain: chain.moduleSuccessEmitter ?? null,
+    note: `ExecutionFromModuleSuccess doit être émis par le Safe attendu : ${expected.safe}.`,
   });
 
   checks.push({
@@ -235,6 +321,20 @@ export function reconcile(
         ? null
         : `consumed=${chain.allowanceConsumedRaw} remaining=${chain.allowanceRemainingRaw ?? "?"}`,
     note: "ConsumeAllowance doit correspondre au montant transféré.",
+  });
+
+  checks.push({
+    id: "ALLOWANCE_EMITTED_BY_ROLES_MODIFIER",
+    kind: "authoritative",
+    status:
+      (chain.allowanceEmitter ?? null) === null
+        ? "MISSING"
+        : same(chain.allowanceEmitter ?? null, expected.rolesModifier)
+          ? "MATCH"
+          : "MISMATCH",
+    audit: null,
+    chain: chain.allowanceEmitter ?? null,
+    note: `ConsumeAllowance doit être émis par le Roles Modifier attendu : ${expected.rolesModifier}.`,
   });
 
   // --- Signaux fournisseur : ils avertissent, ils ne valident jamais. ---
